@@ -77,19 +77,16 @@ internal static class TerminalSmokeTest
                 return 21;
             }
 
-            sessions[0].Term.WriteToTerm("exit\r");
-            sessions[2].Term.WriteToTerm("exit\r");
-
-            await Task.WhenAll(
-                sessions[0].Lifetime.WaitAsync(TimeSpan.FromSeconds(10)),
-                sessions[2].Lifetime.WaitAsync(TimeSpan.FromSeconds(10)));
-
             const string expected = "Tiếng Việt: Trường Sa, tiếng Việt ✓";
             if (!sessions[0].Term.GetConsoleText(stripVTCodes: false).Contains(expected, StringComparison.Ordinal) ||
                 !sessions[2].Term.GetConsoleText(stripVTCodes: false).Contains(expected, StringComparison.Ordinal))
             {
                 return 22;
             }
+
+            await Task.WhenAll(
+                sessions[0].TerminateAsync(),
+                sessions[2].TerminateAsync());
 
             return 0;
         }
