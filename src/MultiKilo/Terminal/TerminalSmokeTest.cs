@@ -185,11 +185,14 @@ internal static class TerminalSmokeTest
                 }
             }
 
-            $text = [System.Text.Encoding]::UTF8.GetString($bytes.ToArray())
+            $byteArray = $bytes.ToArray()
+            $text = [System.Text.Encoding]::UTF8.GetString($byteArray)
             $isBracketed = $text.StartsWith($start) -and $text.EndsWith($end)
             $hasUnicode = $text.Contains("Tiếng Việt")
             $crCount = ($text.ToCharArray() | Where-Object { $_ -eq [char]13 }).Count
-            [Console]::Write("MULTIKILO_BRACKET_RESULT:${isBracketed}:${hasUnicode}:${crCount}" + $crlf)
+            $previewCount = [Math]::Min(160, $byteArray.Length)
+            $previewHex = -join ($byteArray[0..($previewCount - 1)] | ForEach-Object { $_.ToString("X2") })
+            [Console]::Write("MULTIKILO_BRACKET_RESULT:${isBracketed}:${hasUnicode}:${crCount}:HEX=${previewHex}" + $crlf)
             """,
             new UTF8Encoding(false));
 
