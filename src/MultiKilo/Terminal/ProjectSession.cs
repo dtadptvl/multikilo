@@ -246,11 +246,11 @@ public sealed class ProjectSession
             Win32InputMode = true,
             InputCapture = EasyTerminalControl.INPUT_CAPTURE.TabKey |
                            EasyTerminalControl.INPUT_CAPTURE.DirectionKeys,
-            FontFamilyWhenSettingTheme = new FontFamily("Cascadia Mono"),
+            FontFamilyWhenSettingTheme = new System.Windows.Media.FontFamily("Cascadia Mono"),
             FontSizeWhenSettingTheme = 13,
             Theme = theme,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
+            VerticalAlignment = System.Windows.VerticalAlignment.Stretch
         };
     }
 

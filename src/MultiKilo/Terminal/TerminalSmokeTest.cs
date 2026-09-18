@@ -23,7 +23,7 @@ internal static class TerminalSmokeTest
                 sessions.Add(await SmokeSession.StartAsync(i + 1));
             }
 
-            var host = new Grid { Width = 720, Height = 420, Background = Brushes.Black };
+            var host = new Grid { Width = 720, Height = 420, Background = System.Windows.Media.Brushes.Black };
             foreach (var session in sessions)
             {
                 session.View.Visibility = Visibility.Hidden;
@@ -192,7 +192,7 @@ internal static class TerminalSmokeTest
                 InputCapture = EasyTerminalControl.INPUT_CAPTURE.TabKey |
                                EasyTerminalControl.INPUT_CAPTURE.DirectionKeys,
                 Theme = theme,
-                FontFamilyWhenSettingTheme = new FontFamily("Cascadia Mono"),
+                FontFamilyWhenSettingTheme = new System.Windows.Media.FontFamily("Cascadia Mono"),
                 FontSizeWhenSettingTheme = 13
             };
         }
