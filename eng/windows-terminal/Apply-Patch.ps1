@@ -221,6 +221,14 @@ $connectionStateNew = @'
 '@
 Replace-Once $connectionHpp $connectionStateOld $connectionStateNew
 
+$connectionProject = "src\cascadia\TerminalConnection\TerminalConnection.vcxproj"
+$connectionProjectText = Read-Normalized $connectionProject
+$linkAnchor = "    <Link>"
+$linkReplacement = "    <Link>" + [Environment]::NewLine + "      <GenerateMapFile>true</GenerateMapFile>" + [Environment]::NewLine + "      <MapFileName>$(OutDir)TerminalConnection.map</MapFileName>"
+if ($connectionProjectText.IndexOf($linkAnchor, [System.StringComparison]::Ordinal) -lt 0) { throw "TerminalConnection Link anchor not found." }
+$connectionProjectText = $connectionProjectText.Replace($linkAnchor, $linkReplacement)
+Write-Normalized $connectionProject $connectionProjectText
+
 $connectionCpp = "src\cascadia\TerminalConnection\ConptyConnection.cpp"
 $connectionIncludeOld = "#include <winmeta.h>"
 $connectionIncludeNew = "#include <winmeta.h>" + [Environment]::NewLine + "#include <atomic>"
