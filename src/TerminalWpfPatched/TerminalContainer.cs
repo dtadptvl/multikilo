@@ -27,6 +27,8 @@ namespace Microsoft.Terminal.Wpf
         private IntPtr terminal;
         private NativeMethods.ScrollCallback scrollCallback;
         private NativeMethods.WriteCallback writeCallback;
+        private NativeMethods.SessionExitCallback sessionExitCallback;
+        private NativeMethods.SessionOutputCallback sessionOutputCallback;
         private readonly HashSet<ushort> suppressedShortcutKeys = new HashSet<ushort>();
         private readonly object terminalLifetimeLock = new object();
 
@@ -54,6 +56,9 @@ namespace Microsoft.Terminal.Wpf
         /// Event that is fired when the user engages in a mouse scroll over the terminal hwnd.
         /// </summary>
         internal event EventHandler<int> UserScrolled;
+
+        internal event Action<uint> NativeSessionExited;
+        internal event Action<string> NativeSessionOutput;
 
         /// <summary>
         /// Gets or sets a value indicating whether if the renderer should automatically resize to fill the control
@@ -189,6 +194,7 @@ namespace Microsoft.Terminal.Wpf
             this.TerminalRendererSize = renderSize;
 
             this.Connection?.Resize((uint)dimensions.Y, (uint)dimensions.X);
+            NativeMethods.TerminalResizeSession(this.terminal, (uint)dimensions.X, (uint)dimensions.Y);
         }
 
         /// <summary>
@@ -226,7 +232,19 @@ namespace Microsoft.Terminal.Wpf
             };
 
             this.Connection?.Resize((uint)dimensions.Y, (uint)dimensions.X);
+            NativeMethods.TerminalResizeSession(this.terminal, (uint)dimensions.X, (uint)dimensions.Y);
         }
+
+        internal void StartNativeSession(string commandLine, string workingDirectory)
+        {
+            var columns = (uint)Math.Max(1, this.Columns);
+            var rows = (uint)Math.Max(1, this.Rows);
+            NativeMethods.TerminalStartSession(this.terminal, commandLine, workingDirectory, columns, rows);
+        }
+
+        internal void TerminateNativeSession() => NativeMethods.TerminalTerminateSession(this.terminal);
+
+        internal bool NativeSessionIsRunning => NativeMethods.TerminalSessionIsRunning(this.terminal);
 
         /// <summary>
         /// Calculates the rows and columns that would fit in the given size.
@@ -297,6 +315,10 @@ namespace Microsoft.Terminal.Wpf
 
             NativeMethods.TerminalRegisterScrollCallback(this.terminal, this.scrollCallback);
             NativeMethods.TerminalRegisterWriteCallback(this.terminal, this.writeCallback);
+            this.sessionExitCallback = this.OnNativeSessionExit;
+            this.sessionOutputCallback = this.OnNativeSessionOutput;
+            NativeMethods.TerminalRegisterSessionExitCallback(this.terminal, this.sessionExitCallback);
+            NativeMethods.TerminalRegisterSessionOutputCallback(this.terminal, this.sessionOutputCallback);
 
             // If the saved DPI scale isn't the default scale, we push it to the terminal.
             if (dpiScale.PixelsPerInchX != NativeMethods.USER_DEFAULT_SCREEN_DPI)
@@ -473,12 +495,6 @@ namespace Microsoft.Terminal.Wpf
                     case NativeMethods.WindowMessage.WM_KEYDOWN:
                         {
                             UnpackKeyMessage(wParam, lParam, out ushort vkey, out ushort scanCode, out ushort flags);
-                            if (this.TryHandleClipboardShortcut(vkey))
-                            {
-                                handled = true;
-                                break;
-                            }
-
                             NativeMethods.TerminalSendKeyEvent(this.terminal, vkey, scanCode, flags, true);
                             break;
                         }
@@ -488,12 +504,6 @@ namespace Microsoft.Terminal.Wpf
                         {
                             // WM_KEYUP lParam layout documentation: https://docs.microsoft.com/en-us/windows/win32/inputdev/wm-keyup
                             UnpackKeyMessage(wParam, lParam, out ushort vkey, out ushort scanCode, out ushort flags);
-                            if (this.suppressedShortcutKeys.Remove(vkey))
-                            {
-                                handled = true;
-                                break;
-                            }
-
                             NativeMethods.TerminalSendKeyEvent(this.terminal, (ushort)wParam, scanCode, flags, false);
                             break;
                         }
@@ -502,12 +512,6 @@ namespace Microsoft.Terminal.Wpf
                         {
                             // WM_CHAR lParam layout documentation: https://docs.microsoft.com/en-us/windows/win32/inputdev/wm-char
                             UnpackCharMessage(wParam, lParam, out char character, out ushort scanCode, out ushort flags);
-                            if (this.ShouldSuppressClipboardShortcutChar(character))
-                            {
-                                handled = true;
-                                break;
-                            }
-
                             NativeMethods.TerminalSendCharEvent(this.terminal, character, scanCode, flags);
                             break;
                         }
@@ -542,6 +546,7 @@ namespace Microsoft.Terminal.Wpf
                         }
 
                         this.Connection?.Resize((uint)dimensions.Y, (uint)dimensions.X);
+            NativeMethods.TerminalResizeSession(this.terminal, (uint)dimensions.X, (uint)dimensions.Y);
                         break;
 
                     case NativeMethods.WindowMessage.WM_MOUSEWHEEL:
@@ -567,6 +572,16 @@ namespace Microsoft.Terminal.Wpf
         private void OnScroll(int viewTop, int viewHeight, int bufferSize)
         {
             this.TerminalScrolled?.Invoke(this, (viewTop, viewHeight, bufferSize));
+        }
+
+        private void OnNativeSessionExit(uint exitCode)
+        {
+            this.Dispatcher.BeginInvoke(new Action(() => this.NativeSessionExited?.Invoke(exitCode)));
+        }
+
+        private void OnNativeSessionOutput(string data)
+        {
+            this.NativeSessionOutput?.Invoke(data);
         }
 
         private void OnWrite(string data)
