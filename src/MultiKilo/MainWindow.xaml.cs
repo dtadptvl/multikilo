@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -131,6 +132,34 @@ public partial class MainWindow : Window
         PersistProjects();
         ProjectsList.SelectedItem = project;
         await StartProjectAsync(project, continueSession: false);
+    }
+
+    private void OnOpenProjectFolderClick(object sender, RoutedEventArgs e)
+    {
+        if (SelectedProject is not { } project)
+        {
+            return;
+        }
+
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                UseShellExecute = true
+            };
+            startInfo.ArgumentList.Add(project.Folder);
+            Process.Start(startInfo);
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(
+                this,
+                $"Could not open the project folder.\n\n{ex.Message}",
+                "MultiKilo",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Error);
+        }
     }
 
     private async void OnStartResumeClick(object sender, RoutedEventArgs e)
@@ -358,6 +387,7 @@ public partial class MainWindow : Window
         };
 
         var starting = session?.State == ProjectSessionState.Starting;
+        OpenFolderButton.IsEnabled = true;
         StartButton.IsEnabled = !starting && session?.State != ProjectSessionState.Running;
         RestartButton.IsEnabled = !starting;
         TerminateButton.IsEnabled = session?.IsLive == true;
@@ -366,6 +396,7 @@ public partial class MainWindow : Window
 
     private void SetActionButtonsEnabled(bool enabled)
     {
+        OpenFolderButton.IsEnabled = enabled;
         StartButton.IsEnabled = enabled;
         RestartButton.IsEnabled = enabled;
         TerminateButton.IsEnabled = enabled;
@@ -410,6 +441,7 @@ public partial class MainWindow : Window
     {
         const int WmKeyDown = 0x0100;
         const int WmSysKeyDown = 0x0104;
+        const int WmRightButtonDown = 0x0204;
         const int VkControl = 0x11;
         const int VkShift = 0x10;
         const int VkC = 0x43;
@@ -417,10 +449,27 @@ public partial class MainWindow : Window
         const int VkInsert = 0x2D;
 
         if (handled ||
-            msg.message is not (WmKeyDown or WmSysKeyDown) ||
             !IsVisible ||
             !IsActive ||
-            SelectedSession is not { IsLive: true } session)
+            SelectedSession is not { IsLive: true } session ||
+            !NativeTerminalClipboard.IsTerminalWindow(msg.hwnd))
+        {
+            return;
+        }
+
+        if (msg.message == WmRightButtonDown)
+        {
+            if (!NativeTerminalClipboard.HasSelection(msg.hwnd) &&
+                NativeTerminalClipboard.HasUnicodeText())
+            {
+                handled = true;
+                InvokeNativeTextPaste(session, msg.hwnd);
+            }
+
+            return;
+        }
+
+        if (msg.message is not (WmKeyDown or WmSysKeyDown))
         {
             return;
         }
@@ -428,27 +477,39 @@ public partial class MainWindow : Window
         var ctrl = (GetKeyState(VkControl) & 0x8000) != 0;
         var shift = (GetKeyState(VkShift) & 0x8000) != 0;
         var key = msg.wParam.ToInt32();
-        var copyShortcut = (ctrl && shift && key == VkC) || (ctrl && !shift && key == VkInsert);
-        var pasteShortcut = (ctrl && shift && key == VkV) || (!ctrl && shift && key == VkInsert);
 
-        if (copyShortcut)
+        var copyShortcut =
+            (ctrl && key == VkC) ||
+            (ctrl && !shift && key == VkInsert);
+
+        if (copyShortcut && NativeTerminalClipboard.HasSelection(msg.hwnd))
         {
-            var selectedText = session.GetSelectedText();
-            if (!string.IsNullOrEmpty(selectedText))
-            {
-                System.Windows.Clipboard.SetText(selectedText);
-            }
-
             handled = true;
+            NativeTerminalClipboard.InvokeNativeCopyOrPaste(msg.hwnd);
+            return;
         }
-        else if (pasteShortcut)
-        {
-            if (System.Windows.Clipboard.ContainsText())
-            {
-                session.Paste(System.Windows.Clipboard.GetText());
-            }
 
+        var pasteShortcut =
+            (ctrl && key == VkV) ||
+            (!ctrl && shift && key == VkInsert);
+
+        if (pasteShortcut && NativeTerminalClipboard.HasUnicodeText())
+        {
             handled = true;
+            InvokeNativeTextPaste(session, msg.hwnd);
+        }
+    }
+
+    private static void InvokeNativeTextPaste(ProjectSession session, IntPtr terminalHwnd)
+    {
+        session.BeginNativePaste();
+        try
+        {
+            NativeTerminalClipboard.InvokeNativeCopyOrPaste(terminalHwnd);
+        }
+        finally
+        {
+            session.EndNativePaste();
         }
     }
 

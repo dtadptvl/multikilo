@@ -34,9 +34,9 @@ public sealed class ProjectSession
 
     public event EventHandler? StateChanged;
 
-    public string GetSelectedText() => View?.Terminal.GetSelectedText() ?? string.Empty;
+    public void BeginNativePaste() => _term?.BeginNativePaste();
 
-    public void Paste(string text) => _term?.WritePaste(text);
+    public void EndNativePaste() => _term?.EndNativePaste();
 
     public async Task StartAsync(bool continueSession)
     {

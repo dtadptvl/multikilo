@@ -86,6 +86,10 @@
                 <StackPanel Grid.Column="1"
                             Orientation="Horizontal"
                             VerticalAlignment="Center">
+                    <Button x:Name="OpenFolderButton"
+                            Content="Open Folder"
+                            Click="OnOpenProjectFolderClick"
+                            ToolTip="Open this project folder in File Explorer."/>
                     <Button x:Name="StartButton"
                             Content="Start / Resume"
                             Click="OnStartResumeClick"/>

@@ -1,5 +1,5 @@
-using System.Threading.Channels;
 using System.IO;
+using System.Threading.Channels;
 using EasyWindowsTerminalControl;
 
 namespace MultiKilo.Terminal;
@@ -20,6 +20,7 @@ internal sealed class BufferedTermPTY : TermPTY
 
     private readonly Task _writerTask;
     private int _modeProbeIndex;
+    private int _nativePasteDepth;
     private volatile bool _bracketedPasteEnabled;
 
     public BufferedTermPTY(int readBufferSize = 1024 * 64)
@@ -32,17 +33,9 @@ internal sealed class BufferedTermPTY : TermPTY
 
     public void CompleteInput() => _input.Writer.TryComplete();
 
-    public void WritePaste(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return;
-        }
+    public void BeginNativePaste() => Interlocked.Increment(ref _nativePasteDepth);
 
-        QueueChunk(_bracketedPasteEnabled
-            ? BracketedPastePrefix + text + BracketedPasteSuffix
-            : text);
-    }
+    public void EndNativePaste() => Interlocked.Decrement(ref _nativePasteDepth);
 
     private void QueueInput(ref Span<char> input)
     {
@@ -53,6 +46,12 @@ internal sealed class BufferedTermPTY : TermPTY
 
         var copy = input.ToString();
         input = Span<char>.Empty;
+
+        if (Volatile.Read(ref _nativePasteDepth) > 0 && _bracketedPasteEnabled)
+        {
+            copy = BracketedPastePrefix + copy + BracketedPasteSuffix;
+        }
+
         QueueChunk(copy);
     }
 
