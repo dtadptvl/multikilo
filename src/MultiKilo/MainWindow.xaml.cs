@@ -2,7 +2,9 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Threading;
+using System.Runtime.InteropServices;
 using Microsoft.Win32;
 using MultiKilo.Models;
 using MultiKilo.Services;
@@ -24,6 +26,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        ComponentDispatcher.ThreadPreprocessMessage += OnThreadPreprocessMessage;
         ProjectsList.ItemsSource = _projects;
         LoadProjects();
         InitializeTray();
@@ -72,8 +75,8 @@ public partial class MainWindow : Window
     {
         _trayDrawingIcon = DrawingIcon.ExtractAssociatedIcon(Environment.ProcessPath!);
         var menu = new Forms.ContextMenuStrip();
-        menu.Items.Add("Open", null, (_, _) => Dispatcher.Invoke(ShowFromTray));
-        menu.Items.Add("Quit", null, async (_, _) => await Dispatcher.InvokeAsync(QuitFromTrayAsync));
+        menu.Items.Add("Open", null, (_, _) => ShowFromTray());
+        menu.Items.Add("Quit", null, async (_, _) => await QuitFromTrayAsync());
 
         _trayIcon = new Forms.NotifyIcon
         {
@@ -388,6 +391,53 @@ public partial class MainWindow : Window
             "MultiKilo", MessageBoxButton.OK, MessageBoxImage.Error);
     }
 
+    private void OnThreadPreprocessMessage(ref MSG msg, ref bool handled)
+    {
+        const int WmKeyDown = 0x0100;
+        const int WmSysKeyDown = 0x0104;
+        const int VkControl = 0x11;
+        const int VkShift = 0x10;
+        const int VkC = 0x43;
+        const int VkV = 0x56;
+
+        if (handled ||
+            msg.message is not (WmKeyDown or WmSysKeyDown) ||
+            !IsVisible ||
+            !IsActive ||
+            SelectedSession is not { IsLive: true } session)
+        {
+            return;
+        }
+
+        var ctrl = (GetKeyState(VkControl) & 0x8000) != 0;
+        var shift = (GetKeyState(VkShift) & 0x8000) != 0;
+        if (!ctrl || !shift)
+        {
+            return;
+        }
+
+        var key = msg.wParam.ToInt32();
+        if (key == VkC)
+        {
+            var selectedText = session.GetSelectedText();
+            if (!string.IsNullOrEmpty(selectedText))
+            {
+                Clipboard.SetText(selectedText);
+            }
+
+            handled = true;
+        }
+        else if (key == VkV)
+        {
+            if (Clipboard.ContainsText())
+            {
+                session.Paste(Clipboard.GetText());
+            }
+
+            handled = true;
+        }
+    }
+
     private void OnWindowClosing(object? sender, CancelEventArgs e)
     {
         if (_isShuttingDown)
@@ -457,6 +507,7 @@ public partial class MainWindow : Window
         }
 
         _isShuttingDown = true;
+        ComponentDispatcher.ThreadPreprocessMessage -= OnThreadPreprocessMessage;
 
         if (_trayIcon is not null)
         {
@@ -469,4 +520,7 @@ public partial class MainWindow : Window
         _trayDrawingIcon = null;
         Application.Current.Shutdown();
     }
+
+    [DllImport("user32.dll")]
+    private static extern short GetKeyState(int virtualKey);
 }

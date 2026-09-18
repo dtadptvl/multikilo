@@ -34,6 +34,10 @@ public sealed class ProjectSession
 
     public event EventHandler? StateChanged;
 
+    public string GetSelectedText() => View?.Terminal.GetSelectedText() ?? string.Empty;
+
+    public void Paste(string text) => _term?.WritePaste(text);
+
     public async Task StartAsync(bool continueSession)
     {
         if (IsLive)

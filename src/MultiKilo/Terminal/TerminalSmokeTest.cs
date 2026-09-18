@@ -108,7 +108,7 @@ internal static class TerminalSmokeTest
 
     private sealed class SmokeSession
     {
-        private SmokeSession(JobObject job, TermPTY term, EasyTerminalControl view, Task lifetime)
+        private SmokeSession(JobObject job, BufferedTermPTY term, EasyTerminalControl view, Task lifetime)
         {
             Job = job;
             Term = term;
@@ -117,14 +117,14 @@ internal static class TerminalSmokeTest
         }
 
         public JobObject Job { get; }
-        public TermPTY Term { get; }
+        public BufferedTermPTY Term { get; }
         public EasyTerminalControl View { get; }
         public Task Lifetime { get; }
 
         public static async Task<SmokeSession> StartAsync(int index)
         {
             var job = new JobObject();
-            var term = new TermPTY(READ_BUFFER_SIZE: 1024 * 64);
+            var term = new BufferedTermPTY();
             var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             term.TermReady += (_, _) => ready.TrySetResult();
 
@@ -167,7 +167,7 @@ internal static class TerminalSmokeTest
             Job.Dispose();
         }
 
-        private static EasyTerminalControl CreateView(TermPTY term)
+        private static EasyTerminalControl CreateView(BufferedTermPTY term)
         {
             var theme = new TerminalTheme
             {
