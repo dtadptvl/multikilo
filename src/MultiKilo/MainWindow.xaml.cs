@@ -4,9 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Interop;
 using System.Windows.Threading;
-using System.Runtime.InteropServices;
 using Microsoft.Win32;
 using MultiKilo.Models;
 using MultiKilo.Services;
@@ -28,7 +26,6 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        ComponentDispatcher.ThreadPreprocessMessage += OnThreadPreprocessMessage;
         ProjectsList.ItemsSource = _projects;
         LoadProjects();
         InitializeTray();
@@ -184,7 +181,7 @@ public partial class MainWindow : Window
         {
             SetActionButtonsEnabled(false);
             await session.TerminateAsync();
-            oldView?.Disconnect();
+            oldView?.DisconnectConPTYTerm();
             DetachView(oldView);
             await session.StartAsync(continueSession: true);
             AttachView(session.View);
@@ -254,7 +251,7 @@ public partial class MainWindow : Window
 
         if (session is not null)
         {
-            session.View?.Disconnect();
+            session.View?.DisconnectConPTYTerm();
             DetachView(session.View);
             _sessions.Remove(project.Id);
         }
@@ -293,7 +290,7 @@ public partial class MainWindow : Window
         try
         {
             SetActionButtonsEnabled(false);
-            oldView?.Disconnect();
+            oldView?.DisconnectConPTYTerm();
             DetachView(oldView);
             await session.StartAsync(continueSession);
             AttachView(session.View);
@@ -437,82 +434,6 @@ public partial class MainWindow : Window
             "MultiKilo", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
     }
 
-    private void OnThreadPreprocessMessage(ref MSG msg, ref bool handled)
-    {
-        const int WmKeyDown = 0x0100;
-        const int WmSysKeyDown = 0x0104;
-        const int WmRightButtonDown = 0x0204;
-        const int VkControl = 0x11;
-        const int VkShift = 0x10;
-        const int VkC = 0x43;
-        const int VkV = 0x56;
-        const int VkInsert = 0x2D;
-
-        if (handled ||
-            !IsVisible ||
-            !IsActive ||
-            SelectedSession is not { IsLive: true } session ||
-            !NativeTerminalClipboard.IsTerminalWindow(msg.hwnd))
-        {
-            return;
-        }
-
-        if (msg.message == WmRightButtonDown)
-        {
-            if (!NativeTerminalClipboard.HasSelection(msg.hwnd) &&
-                NativeTerminalClipboard.HasUnicodeText())
-            {
-                handled = true;
-                InvokeNativeTextPaste(session, msg.hwnd);
-            }
-
-            return;
-        }
-
-        if (msg.message is not (WmKeyDown or WmSysKeyDown))
-        {
-            return;
-        }
-
-        var ctrl = (GetKeyState(VkControl) & 0x8000) != 0;
-        var shift = (GetKeyState(VkShift) & 0x8000) != 0;
-        var key = msg.wParam.ToInt32();
-
-        var copyShortcut =
-            (ctrl && key == VkC) ||
-            (ctrl && !shift && key == VkInsert);
-
-        if (copyShortcut && NativeTerminalClipboard.HasSelection(msg.hwnd))
-        {
-            handled = true;
-            NativeTerminalClipboard.InvokeNativeCopyOrPaste(msg.hwnd);
-            return;
-        }
-
-        var pasteShortcut =
-            (ctrl && key == VkV) ||
-            (!ctrl && shift && key == VkInsert);
-
-        if (pasteShortcut && NativeTerminalClipboard.HasUnicodeText())
-        {
-            handled = true;
-            InvokeNativeTextPaste(session, msg.hwnd);
-        }
-    }
-
-    private static void InvokeNativeTextPaste(ProjectSession session, IntPtr terminalHwnd)
-    {
-        session.BeginNativePaste();
-        try
-        {
-            NativeTerminalClipboard.InvokeNativeCopyOrPaste(terminalHwnd);
-        }
-        finally
-        {
-            session.EndNativePaste();
-        }
-    }
-
     private void OnWindowClosing(object? sender, CancelEventArgs e)
     {
         if (_isShuttingDown)
@@ -582,7 +503,6 @@ public partial class MainWindow : Window
         }
 
         _isShuttingDown = true;
-        ComponentDispatcher.ThreadPreprocessMessage -= OnThreadPreprocessMessage;
 
         if (_trayIcon is not null)
         {
@@ -596,6 +516,4 @@ public partial class MainWindow : Window
         System.Windows.Application.Current.Shutdown();
     }
 
-    [DllImport("user32.dll")]
-    private static extern short GetKeyState(int virtualKey);
 }
