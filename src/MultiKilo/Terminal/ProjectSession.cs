@@ -166,7 +166,7 @@ public sealed class ProjectSession
             FontFamilyWhenSettingTheme = new System.Windows.Media.FontFamily("Cascadia Mono"),
             FontSizeWhenSettingTheme = 13,
             Theme = theme,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch
         };
     }
