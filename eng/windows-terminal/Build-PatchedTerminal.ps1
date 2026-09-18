@@ -155,10 +155,19 @@ if (-not $dll) {
     throw "Built Microsoft.Terminal.Control.dll was not found."
 }
 
+$connectionDll = Get-ChildItem (Join-Path $sourceDir "bin") -Recurse -Filter "TerminalConnection.dll" -File |
+    Where-Object { $_.FullName -match "\\x64\\$Configuration\\" } |
+    Select-Object -First 1
+if (-not $connectionDll) {
+    throw "Built TerminalConnection.dll was not found."
+}
+
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 Copy-Item $dll.FullName (Join-Path $outputDir "Microsoft.Terminal.Control.dll") -Force
+Copy-Item $connectionDll.FullName (Join-Path $outputDir "TerminalConnection.dll") -Force
 
-Write-Host "Built patched Windows Terminal control."
+Write-Host "Built patched Windows Terminal control and upstream TerminalConnection."
 Write-Host "Source: $terminalTag ($terminalCommit)"
 Write-Host "Windows SDK: $sdkVersion"
-Write-Host "DLL: $(Join-Path $outputDir 'Microsoft.Terminal.Control.dll')"
+Write-Host "Control DLL: $(Join-Path $outputDir 'Microsoft.Terminal.Control.dll')"
+Write-Host "Connection DLL: $(Join-Path $outputDir 'TerminalConnection.dll')"
