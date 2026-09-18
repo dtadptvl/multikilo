@@ -272,7 +272,7 @@ namespace
 
     struct MultiKiloConptySession
     {
-        winrt::com_ptr<winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection> connection;
+        std::unique_ptr<winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection> connection;
         wil::unique_handle job;
         wil::unique_handle process;
         std::thread waitThread;
@@ -314,7 +314,7 @@ try
         &jobInfo,
         sizeof(jobInfo)));
 
-    holder->connection = winrt::make_self<winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection>();
+    holder->connection = std::make_unique<winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection>();
     holder->connection->MultiKiloSetJob(holder->job.get());
 
     const auto settings = winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection::CreateSettings(
@@ -548,10 +548,9 @@ public:
     {
         Close();
 
-        // ConptyConnection::final_release deliberately destroys the object on
-        // a background thread. Keep the component loaded for the process
-        // lifetime so that deferred final_release code can never execute from
-        // an unloaded DLL.
+        // Keep the component loaded for the process lifetime. The bridge owns
+        // the concrete ConptyConnection implementation directly (unique_ptr),
+        // so there is no WinRT activation or deferred final_release involved.
         static const HMODULE terminalConnectionModule = LoadLibraryW(L"TerminalConnection.dll");
         _module = terminalConnectionModule;
         if (!_module)
