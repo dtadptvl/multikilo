@@ -6,7 +6,6 @@ using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Threading.Channels;
 using Windows.Win32;
 
 namespace EasyWindowsTerminalControl {
@@ -25,16 +24,10 @@ namespace EasyWindowsTerminalControl {
 		private SafeFileHandle _consoleInputPipeWriteHandle;
 		private StreamWriter _consoleInputWriter;
 		private BinaryWriter _consoleInputWriterB;
-		private readonly Channel<string> _inputQueue = Channel.CreateUnbounded<string>(new UnboundedChannelOptions {
-			SingleReader = true,
-			SingleWriter = false,
-			AllowSynchronousContinuations = false,
-		});
-		private readonly Task _inputWriterTask;
+		private readonly object _inputWriteLock = new();
 		public TermPTY(int READ_BUFFER_SIZE = 1024 * 16, bool USE_BINARY_WRITER = false, IProcessFactory ProcessFactory = null) {
 			this.READ_BUFFER_SIZE = READ_BUFFER_SIZE;
 			this.USE_BINARY_WRITER = USE_BINARY_WRITER;
-			_inputWriterTask = Task.Run(WriteInputQueueAsync);
 		}
 		private bool USE_BINARY_WRITER;
 
@@ -57,8 +50,6 @@ namespace EasyWindowsTerminalControl {
 		/// </summary>
 		public event EventHandler TermReady;
 		public event EventHandler<TerminalOutputEventArgs> TerminalOutput;//how we send data to the UI terminal
-		internal event Action<string> InputEnqueuedForTesting;
-		internal event Action<string> InputWrittenForTesting;
 		public bool TermProcIsStarted { get; private set; }
 
 
@@ -122,16 +113,18 @@ namespace EasyWindowsTerminalControl {
 		/// </summary>
 		/// <param name="input">A string of characters to write to the console. Supports VT-100 codes.</param>
 		public void WriteToTerm(ReadOnlySpan<char> input) {
-			if (IsDesignMode)
-				return;
-			if (TheConsole.IsDisposed)
-				return;
-			if (_consoleInputWriter == null && _consoleInputWriterB == null)
-				throw new InvalidOperationException("There is no writer attached to a pseudoconsole. Have you called Start on this instance yet?");
-			if (!USE_BINARY_WRITER)
-				_consoleInputWriter.Write(input);
-			else
-				WriteToTermBinary(Encoding.UTF8.GetBytes(input.ToString()));
+			lock (_inputWriteLock) {
+				if (IsDesignMode)
+					return;
+				if (TheConsole == null || TheConsole.IsDisposed)
+					return;
+				if (_consoleInputWriter == null && _consoleInputWriterB == null)
+					throw new InvalidOperationException("There is no writer attached to a pseudoconsole. Have you called Start on this instance yet?");
+				if (!USE_BINARY_WRITER)
+					_consoleInputWriter.Write(input);
+				else
+					WriteToTermBinary(Encoding.UTF8.GetBytes(input.ToString()));
+			}
 		}
 		public void WriteToTermBinary(ReadOnlySpan<byte> input) {
 			if (!USE_BINARY_WRITER) {
@@ -144,7 +137,7 @@ namespace EasyWindowsTerminalControl {
 		/// <summary>
 		/// Close the input stream to the process (will send EOF if attempted to be read).
 		/// </summary>
-		public void CompleteInput() => _inputQueue.Writer.TryComplete();
+		public void CompleteInput() { }
 
 		public void CloseStdinToApp() {
 			CompleteInput();
@@ -272,26 +265,10 @@ namespace EasyWindowsTerminalControl {
 			if (string.IsNullOrEmpty(data) || _ReadOnly)
 				return;
 
-			InputEnqueuedForTesting?.Invoke(data);
-			if (!_inputQueue.Writer.TryWrite(data))
-				throw new InvalidOperationException("Terminal input queue is closed.");
-		}
-
-		private async Task WriteInputQueueAsync() {
-			try {
-				await foreach (var data in _inputQueue.Reader.ReadAllAsync().ConfigureAwait(false)) {
-					if (!string.IsNullOrEmpty(data)) {
-						WriteToTerm(data.AsSpan());
-						InputWrittenForTesting?.Invoke(data);
-					}
-				}
-			}
-			catch (IOException) {
-			}
-			catch (ObjectDisposedException) {
-			}
-			catch (InvalidOperationException) when (Process?.HasExited != false) {
-			}
+			Span<char> span = data.ToCharArray();
+			InterceptInputToTermApp?.Invoke(ref span);
+			if (span.Length > 0)
+				WriteToTerm(span);
 		}
 
 		void ITerminalConnection.Resize(uint row_height, uint column_width) {
