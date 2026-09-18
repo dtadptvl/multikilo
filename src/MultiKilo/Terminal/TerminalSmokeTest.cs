@@ -123,6 +123,35 @@ internal static class TerminalSmokeTest
         File.WriteAllText(
             scriptPath,
             """
+            Add-Type -TypeDefinition @"
+            using System;
+            using System.Runtime.InteropServices;
+            public static class MultiKiloConsoleMode {
+                [DllImport("kernel32.dll", SetLastError = true)]
+                public static extern IntPtr GetStdHandle(int nStdHandle);
+                [DllImport("kernel32.dll", SetLastError = true)]
+                [return: MarshalAs(UnmanagedType.Bool)]
+                public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+                [DllImport("kernel32.dll", SetLastError = true)]
+                [return: MarshalAs(UnmanagedType.Bool)]
+                public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+            }
+            "@
+
+            $stdin = [MultiKiloConsoleMode]::GetStdHandle(-10)
+            [uint32]$mode = 0
+            if (-not [MultiKiloConsoleMode]::GetConsoleMode($stdin, [ref]$mode)) {
+                throw "GetConsoleMode failed"
+            }
+
+            $ENABLE_LINE_INPUT = 0x0002
+            $ENABLE_ECHO_INPUT = 0x0004
+            $ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
+            $rawMode = ($mode -band (-bnot ($ENABLE_LINE_INPUT -bor $ENABLE_ECHO_INPUT))) -bor $ENABLE_VIRTUAL_TERMINAL_INPUT
+            if (-not [MultiKiloConsoleMode]::SetConsoleMode($stdin, $rawMode)) {
+                throw "SetConsoleMode failed"
+            }
+
             $esc = [char]27
             $crlf = ([char]13).ToString() + ([char]10)
             $start = "$esc[200~"
