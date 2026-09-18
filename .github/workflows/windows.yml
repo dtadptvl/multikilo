@@ -25,7 +25,9 @@ jobs:
       - name: ConPTY and terminal smoke test
         shell: pwsh
         run: |
-          dotnet run --project .\src\MultiKilo\MultiKilo.csproj -c Release --no-build -- --smoke-test
+          $exe = ".\src\MultiKilo\bin\x64\Release\net8.0-windows10.0.19041.0\win-x64\MultiKilo.exe"
+          if (-not (Test-Path $exe)) { throw "Built MultiKilo.exe not found at $exe" }
+          & $exe --smoke-test
           if ($LASTEXITCODE -ne 0) { throw "Smoke test failed with exit code $LASTEXITCODE" }
 
       - name: Publish portable x64 folder
