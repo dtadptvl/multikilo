@@ -25,34 +25,48 @@ if (-not (Test-Path $vswhere)) {
 
 $vs2022 = & $vswhere -version "[17.0,18.0)" -products * -property installationPath |
     Select-Object -First 1
-if (-not $vs2022) {
-    throw "Visual Studio 2022 (17.x) was not found. Windows Terminal v1.25 requires the v143 UWP toolset."
+
+if ($vs2022) {
+    $vsInstall = $vs2022
+    $uwpComponent = "Microsoft.VisualStudio.ComponentGroup.UWP.VC"
+    Write-Host "Using Visual Studio 2022 with v143 UWP tools."
+}
+else {
+    $vsInstall = & $vswhere -latest -products * -property installationPath |
+        Select-Object -First 1
+    if (-not $vsInstall) {
+        throw "No Visual Studio installation was found."
+    }
+
+    # VS 18 no longer installs the older UWP toolset by default. The pinned
+    # Windows Terminal source still targets v143, so install only that
+    # compatibility component rather than retargeting the source.
+    $uwpComponent = "Microsoft.VisualStudio.ComponentGroup.UWP.VC.v143"
+    Write-Host "Visual Studio 2022 is unavailable; using the latest Visual Studio with v143 UWP compatibility tools."
 }
 
-$uwpComponent = "Microsoft.VisualStudio.ComponentGroup.UWP.VC"
-$vsWithUwp = & $vswhere -version "[17.0,18.0)" -products * -requires $uwpComponent -property installationPath |
+$vsWithUwp = & $vswhere -products * -requires $uwpComponent -property installationPath |
+    Where-Object { $_ -eq $vsInstall } |
     Select-Object -First 1
 
 if (-not $vsWithUwp) {
     $vsInstaller = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vs_installer.exe"
     if (-not (Test-Path $vsInstaller)) {
-        throw "Visual Studio Installer was not found; cannot add the v143 UWP C++ component."
+        throw "Visual Studio Installer was not found; cannot add the required v143 UWP C++ component."
     }
 
-    Write-Host "Installing Visual Studio 2022 v143 UWP C++ build tools..."
-    $installerArgs = "modify --installPath `"$vs2022`" --add $uwpComponent --quiet --norestart"
+    Write-Host "Installing $uwpComponent..."
+    $installerArgs = "modify --installPath `"$vsInstall`" --add $uwpComponent --quiet --norestart"
     $process = Start-Process -FilePath $vsInstaller -ArgumentList $installerArgs -PassThru -Wait
     if ($process.ExitCode -notin @(0, 3010)) {
         throw "Visual Studio Installer failed with exit code $($process.ExitCode)."
     }
 }
 
-$msbuild = & $vswhere -version "[17.0,18.0)" -products * -requires Microsoft.Component.MSBuild $uwpComponent -find "MSBuild\**\Bin\MSBuild.exe" |
-    Select-Object -First 1
-if (-not $msbuild) {
-    throw "Visual Studio 2022 MSBuild with v143 UWP C++ tools was not found."
+$msbuild = Join-Path $vsInstall "MSBuild\Current\Bin\MSBuild.exe"
+if (-not (Test-Path $msbuild)) {
+    throw "MSBuild.exe was not found under $vsInstall."
 }
-
 $sdkRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\Lib"
 $sdk = Get-ChildItem $sdkRoot -Directory |
     Where-Object {
