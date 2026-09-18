@@ -17,6 +17,7 @@
     <PublishTrimmed>false</PublishTrimmed>
     <PublishReadyToRun>false</PublishReadyToRun>
     <PatchedTerminalDll>$(MSBuildThisFileDirectory)..\..\artifacts\terminal\win-x64\Microsoft.Terminal.Control.dll</PatchedTerminalDll>
+    <PatchedTerminalConnectionDll>$(MSBuildThisFileDirectory)..\..\artifacts\terminal\win-x64\TerminalConnection.dll</PatchedTerminalConnectionDll>
   </PropertyGroup>
 
   <ItemGroup>
@@ -29,10 +30,14 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
+    <None Include="$(PatchedTerminalConnectionDll)" Link="TerminalConnection.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
   </ItemGroup>
 
   <Target Name="RequirePatchedTerminal" BeforeTargets="PrepareForBuild"
-          Condition="'$(DesignTimeBuild)' != 'true' and !Exists('$(PatchedTerminalDll)')">
-    <Error Text="Patched Microsoft.Terminal.Control.dll is missing. Run eng\windows-terminal\Build-PatchedTerminal.ps1 first." />
+          Condition="'$(DesignTimeBuild)' != 'true' and (!Exists('$(PatchedTerminalDll)') or !Exists('$(PatchedTerminalConnectionDll)'))">
+    <Error Text="Patched terminal native DLLs are missing. Run eng\windows-terminal\Build-PatchedTerminal.ps1 first." />
   </Target>
 </Project>
