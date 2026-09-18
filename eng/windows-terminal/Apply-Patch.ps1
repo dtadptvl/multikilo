@@ -89,14 +89,6 @@ try
         bracketedPaste = _terminal->IsXtermBracketedPasteModeEnabled();
     }
 
-    // A real ConPTY consumes application terminal modes (including DECSET
-    // 2004/1049) inside conhost and emits rendered VT output to the frontend.
-    // The low-level WPF HwndTerminal therefore cannot reliably observe Kilo's
-    // bracketed-paste state. MultiKilo explicitly launches Kilo/OpenTUI, which
-    // supports bracketed paste for the lifetime of its session, so use the
-    // declared session capability as the authoritative fallback.
-    bracketedPaste = bracketedPaste || _bracketedPasteSupported;
-
     if (bracketedPaste)
     {
         filtered.insert(0, L"\x1b[200~");
@@ -204,6 +196,277 @@ Write-Host "Applied MultiKilo native terminal patch to pinned Windows Terminal s
 
 
 # ---------------------------------------------------------------------------
+# MultiKilo bridge to Windows Terminal's real ConptyConnection
+# ---------------------------------------------------------------------------
+
+$connectionHpp = "src\cascadia\TerminalConnection\ConptyConnection.h"
+$connectionHppOld = @'
+        uint64_t RootProcessHandle() noexcept;
+'@
+$connectionHppNew = @'
+        uint64_t RootProcessHandle() noexcept;
+        void MultiKiloSetJob(HANDLE job) noexcept;
+'@
+Replace-Once $connectionHpp $connectionHppOld $connectionHppNew
+
+$connectionStateOld = @'
+        DWORD _flags{ 0 };
+'@
+$connectionStateNew = @'
+        DWORD _flags{ 0 };
+        HANDLE _multiKiloJob{ nullptr };
+'@
+Replace-Once $connectionHpp $connectionStateOld $connectionStateNew
+
+$connectionCpp = "src\cascadia\TerminalConnection\ConptyConnection.cpp"
+$connectionIncludeOld = "#include <winmeta.h>"
+$connectionIncludeNew = "#include <winmeta.h>" + [Environment]::NewLine + "#include <atomic>" + [Environment]::NewLine + "#include <thread>"
+Replace-Once $connectionCpp $connectionIncludeOld $connectionIncludeNew
+
+$launchAnchor = @'
+    void ConptyConnection::_LaunchAttachedClient()
+'@
+$launchReplacement = @'
+    void ConptyConnection::MultiKiloSetJob(HANDLE job) noexcept
+    {
+        _multiKiloJob = job;
+    }
+
+    void ConptyConnection::_LaunchAttachedClient()
+'@
+Replace-Once $connectionCpp $launchAnchor $launchReplacement
+
+$createFlagsOld = "EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, // dwCreationFlags"
+$createFlagsNew = "EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED, // dwCreationFlags"
+Replace-Once $connectionCpp $createFlagsOld $createFlagsNew
+
+$processCreatedOld = @'
+            &_piClient // lpProcessInformation
+            ));
+
+        DeleteProcThreadAttributeList(siEx.lpAttributeList);
+'@
+$processCreatedNew = @'
+            &_piClient // lpProcessInformation
+            ));
+
+        if (_multiKiloJob)
+        {
+            THROW_IF_WIN32_BOOL_FALSE(AssignProcessToJobObject(_multiKiloJob, _piClient.hProcess));
+        }
+
+        THROW_LAST_ERROR_IF(ResumeThread(_piClient.hThread) == static_cast<DWORD>(-1));
+
+        DeleteProcThreadAttributeList(siEx.lpAttributeList);
+'@
+Replace-Once $connectionCpp $processCreatedOld $processCreatedNew
+
+$connectionBridge = @'
+
+// MultiKilo uses this tiny C ABI to consume the exact Windows Terminal
+// ConptyConnection implementation without requiring packaged WinRT activation.
+namespace
+{
+    using MultiKiloOutputCallback = void(__stdcall*)(void*, LPCWSTR, uint32_t);
+    using MultiKiloExitCallback = void(__stdcall*)(void*, DWORD);
+
+    struct MultiKiloConptySession
+    {
+        winrt::com_ptr<winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection> connection;
+        wil::unique_handle job;
+        wil::unique_handle process;
+        std::thread waitThread;
+        std::atomic_bool running{ false };
+        std::atomic<void*> context{ nullptr };
+        std::atomic<MultiKiloOutputCallback> outputCallback{ nullptr };
+        std::atomic<MultiKiloExitCallback> exitCallback{ nullptr };
+    };
+}
+
+extern "C" __declspec(dllexport) HRESULT __stdcall MultiKiloConptyCreate(
+    LPCWSTR commandLine,
+    LPCWSTR workingDirectory,
+    uint32_t columns,
+    uint32_t rows,
+    void* context,
+    MultiKiloOutputCallback outputCallback,
+    MultiKiloExitCallback exitCallback,
+    void** session)
+try
+{
+    RETURN_HR_IF_NULL(E_INVALIDARG, commandLine);
+    RETURN_HR_IF_NULL(E_INVALIDARG, session);
+    *session = nullptr;
+
+    auto holder = std::make_unique<MultiKiloConptySession>();
+    holder->context = context;
+    holder->outputCallback = outputCallback;
+    holder->exitCallback = exitCallback;
+
+    holder->job.reset(CreateJobObjectW(nullptr, nullptr));
+    RETURN_LAST_ERROR_IF_NULL(holder->job);
+
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo{};
+    jobInfo.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    RETURN_IF_WIN32_BOOL_FALSE(SetInformationJobObject(
+        holder->job.get(),
+        JobObjectExtendedLimitInformation,
+        &jobInfo,
+        sizeof(jobInfo)));
+
+    holder->connection = winrt::make_self<winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection>();
+    holder->connection->MultiKiloSetJob(holder->job.get());
+
+    const auto settings = winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection::CreateSettings(
+        winrt::hstring{ commandLine },
+        winrt::hstring{ workingDirectory ? workingDirectory : L"" },
+        winrt::hstring{},
+        false,
+        winrt::hstring{},
+        nullptr,
+        rows,
+        columns,
+        winrt::guid{},
+        winrt::guid{});
+    holder->connection->Initialize(settings);
+
+    const auto raw = holder.get();
+    holder->connection->TerminalOutput([raw](const winrt::array_view<const char16_t> output) {
+        const auto callback = raw->outputCallback.load();
+        const auto callbackContext = raw->context.load();
+        if (callback && callbackContext && !output.empty())
+        {
+            callback(
+                callbackContext,
+                reinterpret_cast<LPCWSTR>(output.data()),
+                gsl::narrow_cast<uint32_t>(output.size()));
+        }
+    });
+
+    holder->connection->Start();
+
+    const auto rootProcess = reinterpret_cast<HANDLE>(holder->connection->RootProcessHandle());
+    RETURN_HR_IF_NULL(E_FAIL, rootProcess);
+    RETURN_IF_WIN32_BOOL_FALSE(DuplicateHandle(
+        GetCurrentProcess(),
+        rootProcess,
+        GetCurrentProcess(),
+        holder->process.addressof(),
+        0,
+        FALSE,
+        DUPLICATE_SAME_ACCESS));
+
+    holder->running = true;
+    holder->waitThread = std::thread([raw]() noexcept {
+        WaitForSingleObject(raw->process.get(), INFINITE);
+
+        DWORD exitCode{};
+        GetExitCodeProcess(raw->process.get(), &exitCode);
+        raw->running = false;
+
+        const auto callback = raw->exitCallback.load();
+        const auto callbackContext = raw->context.load();
+        if (callback && callbackContext)
+        {
+            callback(callbackContext, exitCode);
+        }
+    });
+
+    *session = holder.release();
+    return S_OK;
+}
+CATCH_RETURN()
+
+extern "C" __declspec(dllexport) void __stdcall MultiKiloConptyWrite(
+    void* session,
+    LPCWSTR data,
+    uint32_t length)
+try
+{
+    const auto holder = static_cast<MultiKiloConptySession*>(session);
+    if (!holder || !holder->connection || !data || length == 0)
+    {
+        return;
+    }
+
+    const auto first = reinterpret_cast<const char16_t*>(data);
+    holder->connection->WriteInput(winrt::array_view<const char16_t>{ first, first + length });
+}
+CATCH_LOG()
+
+extern "C" __declspec(dllexport) void __stdcall MultiKiloConptyResize(
+    void* session,
+    uint32_t columns,
+    uint32_t rows)
+try
+{
+    const auto holder = static_cast<MultiKiloConptySession*>(session);
+    if (holder && holder->connection)
+    {
+        holder->connection->Resize(rows, columns);
+    }
+}
+CATCH_LOG()
+
+extern "C" __declspec(dllexport) void __stdcall MultiKiloConptyTerminate(void* session)
+try
+{
+    const auto holder = static_cast<MultiKiloConptySession*>(session);
+    if (holder && holder->job)
+    {
+        LOG_IF_WIN32_BOOL_FALSE(TerminateJobObject(holder->job.get(), 1));
+    }
+}
+CATCH_LOG()
+
+extern "C" __declspec(dllexport) BOOL __stdcall MultiKiloConptyIsRunning(void* session)
+{
+    const auto holder = static_cast<MultiKiloConptySession*>(session);
+    return holder && holder->running ? TRUE : FALSE;
+}
+
+extern "C" __declspec(dllexport) void __stdcall MultiKiloConptyDestroy(void* session)
+try
+{
+    std::unique_ptr<MultiKiloConptySession> holder{ static_cast<MultiKiloConptySession*>(session) };
+    if (!holder)
+    {
+        return;
+    }
+
+    holder->outputCallback = nullptr;
+    holder->exitCallback = nullptr;
+    holder->context = nullptr;
+
+    if (holder->job && holder->running)
+    {
+        TerminateJobObject(holder->job.get(), 1);
+    }
+
+    if (holder->connection)
+    {
+        holder->connection->Close();
+    }
+
+    if (holder->waitThread.joinable())
+    {
+        holder->waitThread.join();
+    }
+
+    holder->running = false;
+    holder->connection = nullptr;
+}
+CATCH_LOG()
+'@
+
+$connectionText = Read-Normalized $connectionCpp
+$connectionText = $connectionText.TrimEnd() + [Environment]::NewLine + $connectionBridge + [Environment]::NewLine
+Write-Normalized $connectionCpp $connectionText
+
+Write-Host "Patched upstream TerminalConnection for MultiKilo."
+
+
+# ---------------------------------------------------------------------------
 # MultiKilo native session backend
 # ---------------------------------------------------------------------------
 # The WPF layer owns layout/lifecycle only. HwndTerminal owns keyboard,
@@ -214,7 +477,7 @@ __declspec(dllexport) bool _stdcall TerminalClipboardContainsImage();
 '@
 $hppExportsNew = @'
 __declspec(dllexport) bool _stdcall TerminalClipboardContainsImage();
-__declspec(dllexport) HRESULT _stdcall TerminalStartSession(void* terminal, LPCWSTR commandLine, LPCWSTR workingDirectory, BOOL bracketedPasteSupported, uint32_t columns, uint32_t rows);
+__declspec(dllexport) HRESULT _stdcall TerminalStartSession(void* terminal, LPCWSTR commandLine, LPCWSTR workingDirectory, uint32_t columns, uint32_t rows);
 __declspec(dllexport) void _stdcall TerminalTerminateSession(void* terminal);
 __declspec(dllexport) bool _stdcall TerminalSessionIsRunning(void* terminal);
 __declspec(dllexport) void _stdcall TerminalResizeSession(void* terminal, uint32_t columns, uint32_t rows);
@@ -229,7 +492,7 @@ $hppFriendsOld = @'
 '@
 $hppFriendsNew = @'
     friend void _stdcall TerminalPasteFromClipboard(void* terminal);
-    friend HRESULT _stdcall TerminalStartSession(void* terminal, LPCWSTR commandLine, LPCWSTR workingDirectory, BOOL bracketedPasteSupported, uint32_t columns, uint32_t rows);
+    friend HRESULT _stdcall TerminalStartSession(void* terminal, LPCWSTR commandLine, LPCWSTR workingDirectory, uint32_t columns, uint32_t rows);
     friend void _stdcall TerminalTerminateSession(void* terminal);
     friend bool _stdcall TerminalSessionIsRunning(void* terminal);
     friend void _stdcall TerminalResizeSession(void* terminal, uint32_t columns, uint32_t rows);
@@ -240,7 +503,7 @@ $hppFriendsNew = @'
 Replace-Once $hpp $hppFriendsOld $hppFriendsNew
 
 $structOld = "struct HwndTerminal : ::Microsoft::Console::Types::IControlAccessibilityInfo"
-$structNew = "class MultiKiloNativeSession;" + [Environment]::NewLine + [Environment]::NewLine + $structOld
+$structNew = "class MultiKiloTerminalConnectionSession;" + [Environment]::NewLine + [Environment]::NewLine + $structOld
 Replace-Once $hpp $structOld $structNew
 
 $hppStateOld = @'
@@ -248,236 +511,108 @@ $hppStateOld = @'
 '@
 $hppStateNew = @'
     std::function<void(wchar_t*)> _pfnWriteCallback;
-    std::unique_ptr<MultiKiloNativeSession> _nativeSession;
+    std::unique_ptr<MultiKiloTerminalConnectionSession> _nativeSession;
     void (_stdcall* _sessionExitCallback)(DWORD){ nullptr };
     void (_stdcall* _sessionOutputCallback)(LPCWSTR){ nullptr };
     bool _suppressCopyChar{ false };
     bool _suppressPasteChar{ false };
-    bool _bracketedPasteSupported{ false };
 '@
 Replace-Once $hpp $hppStateOld $hppStateNew
 
 $cppIncludesOld = '#include "../../types/inc/utils.hpp"'
 $cppIncludesNew = @'
 #include "../../types/inc/utils.hpp"
-#include <atomic>
-#include <condition_variable>
-#include <deque>
-#include <mutex>
-#include <thread>
-#include <til/env.h>
 '@
 Replace-Once $cpp $cppIncludesOld $cppIncludesNew
 
 $nativeSessionCode = @'
-class MultiKiloNativeSession
+class MultiKiloTerminalConnectionSession
 {
 public:
     using ExitCallback = void(_stdcall*)(DWORD);
     using OutputCallback = void(_stdcall*)(LPCWSTR);
+    using BridgeOutputCallback = void(_stdcall*)(void*, LPCWSTR, uint32_t);
+    using BridgeExitCallback = void(_stdcall*)(void*, DWORD);
 
-    explicit MultiKiloNativeSession(HwndTerminal* owner) noexcept :
+    explicit MultiKiloTerminalConnectionSession(HwndTerminal* owner) noexcept :
         _owner(owner)
     {
     }
 
-    ~MultiKiloNativeSession()
+    ~MultiKiloTerminalConnectionSession()
     {
         Close();
     }
 
-    HRESULT Start(std::wstring_view commandLine, std::wstring_view workingDirectory, uint32_t columns, uint32_t rows)
-    try
+    HRESULT Start(std::wstring_view commandLine, std::wstring_view workingDirectory, uint32_t columns, uint32_t rows) noexcept
     {
         Close();
 
-        wil::unique_handle inputRead;
-        wil::unique_handle inputWrite;
-        wil::unique_handle outputRead;
-        wil::unique_handle outputWrite;
-
-        RETURN_IF_WIN32_BOOL_FALSE(CreatePipe(inputRead.addressof(), inputWrite.addressof(), nullptr, 0));
-        RETURN_IF_WIN32_BOOL_FALSE(CreatePipe(outputRead.addressof(), outputWrite.addressof(), nullptr, 0));
-
-        HPCON hpc{};
-        const COORD size{
-            gsl::narrow_cast<SHORT>(std::clamp<uint32_t>(columns, 1, SHRT_MAX)),
-            gsl::narrow_cast<SHORT>(std::clamp<uint32_t>(rows, 1, SHRT_MAX)),
-        };
-        RETURN_IF_FAILED(CreatePseudoConsole(size, inputRead.get(), outputWrite.get(), 0, &hpc));
-
-        const auto hpcCleanup = wil::scope_exit([&]() noexcept {
-            if (hpc)
-            {
-                ClosePseudoConsole(hpc);
-            }
-        });
-
-        wil::unique_handle job{ CreateJobObjectW(nullptr, nullptr) };
-        RETURN_LAST_ERROR_IF_NULL(job);
-
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo{};
-        jobInfo.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        RETURN_IF_WIN32_BOOL_FALSE(SetInformationJobObject(
-            job.get(),
-            JobObjectExtendedLimitInformation,
-            &jobInfo,
-            sizeof(jobInfo)));
-
-        STARTUPINFOEXW si{};
-        si.StartupInfo.cb = sizeof(si);
-
-        SIZE_T attributeBytes{};
-        InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeBytes);
-        std::vector<std::byte> attributeStorage(attributeBytes);
-        si.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributeStorage.data());
-        RETURN_IF_WIN32_BOOL_FALSE(InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &attributeBytes));
-        const auto attributeCleanup = wil::scope_exit([&]() noexcept {
-            DeleteProcThreadAttributeList(si.lpAttributeList);
-        });
-
-        RETURN_IF_WIN32_BOOL_FALSE(UpdateProcThreadAttribute(
-            si.lpAttributeList,
-            0,
-            PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-            hpc,
-            sizeof(hpc),
-            nullptr,
-            nullptr));
-
-        std::wstring mutableCommand{ commandLine };
-        mutableCommand.push_back(L'\0');
-        const auto directory = workingDirectory.empty() ? nullptr : workingDirectory.data();
-
-        // Match Windows Terminal's ConptyConnection process environment.
-        // A number of Windows TUIs use WT_SESSION to select their raw VT
-        // input path (which is where bracketed paste is enabled).
-        auto environment = til::env::from_current_environment();
-        const auto sessionId = ::Microsoft::Console::Utils::CreateGuid();
-        const auto profileId = ::Microsoft::Console::Utils::CreateGuid();
-        environment.as_map().insert_or_assign(
-            L"WT_SESSION",
-            ::Microsoft::Console::Utils::GuidToPlainString(sessionId));
-        environment.as_map().insert_or_assign(
-            L"WT_PROFILE_ID",
-            ::Microsoft::Console::Utils::GuidToString(profileId));
-        auto environmentBlock = environment.to_string();
-        auto environmentData = environmentBlock.empty() ? nullptr : environmentBlock.data();
-
-        PROCESS_INFORMATION pi{};
-        RETURN_IF_WIN32_BOOL_FALSE(CreateProcessW(
-            nullptr,
-            mutableCommand.data(),
-            nullptr,
-            nullptr,
-            FALSE,
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
-            environmentData,
-            directory,
-            &si.StartupInfo,
-            &pi));
-
-        wil::unique_handle process{ pi.hProcess };
-        wil::unique_handle processThread{ pi.hThread };
-
-        RETURN_IF_WIN32_BOOL_FALSE(AssignProcessToJobObject(job.get(), process.get()));
-
-        _hpc = hpc;
-        hpc = nullptr;
-        _inputWrite = inputWrite.release();
-        _outputRead = outputRead.release();
-        _process = process.release();
-        _job = job.release();
-        _stopping = false;
-        _running = true;
-
-        _inputThread = std::thread([this]() noexcept { _InputLoop(); });
-        _outputThread = std::thread([this]() noexcept { _OutputLoop(); });
-        _waitThread = std::thread([this]() noexcept { _WaitLoop(); });
-
-        if (ResumeThread(processThread.get()) == static_cast<DWORD>(-1))
+        _module = LoadLibraryW(L"TerminalConnection.dll");
+        if (!_module)
         {
-            const auto hr = HRESULT_FROM_WIN32(GetLastError());
+            return HRESULT_FROM_WIN32(GetLastError());
+        }
+
+        _create = reinterpret_cast<CreateFn>(GetProcAddress(_module, "MultiKiloConptyCreate"));
+        _write = reinterpret_cast<WriteFn>(GetProcAddress(_module, "MultiKiloConptyWrite"));
+        _resize = reinterpret_cast<ResizeFn>(GetProcAddress(_module, "MultiKiloConptyResize"));
+        _terminate = reinterpret_cast<TerminateFn>(GetProcAddress(_module, "MultiKiloConptyTerminate"));
+        _isRunning = reinterpret_cast<IsRunningFn>(GetProcAddress(_module, "MultiKiloConptyIsRunning"));
+        _destroy = reinterpret_cast<DestroyFn>(GetProcAddress(_module, "MultiKiloConptyDestroy"));
+
+        if (!_create || !_write || !_resize || !_terminate || !_isRunning || !_destroy)
+        {
+            const auto hr = HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
             Close();
             return hr;
         }
 
-        return S_OK;
-    }
-    catch (...)
-    {
-        Close();
-        return wil::ResultFromCaughtException();
+        const std::wstring command{ commandLine };
+        const std::wstring directory{ workingDirectory };
+        const auto hr = _create(
+            command.c_str(),
+            directory.c_str(),
+            columns,
+            rows,
+            this,
+            &_OutputThunk,
+            &_ExitThunk,
+            &_session);
+        if (FAILED(hr))
+        {
+            Close();
+        }
+        return hr;
     }
 
     void Write(std::wstring_view input) noexcept
     {
-        if (input.empty() || !_running || _stopping)
+        if (_session && _write && !input.empty())
         {
-            return;
+            _write(_session, input.data(), gsl::narrow_cast<uint32_t>(input.size()));
         }
-
-        const int bytes = WideCharToMultiByte(
-            CP_UTF8,
-            0,
-            input.data(),
-            gsl::narrow_cast<int>(input.size()),
-            nullptr,
-            0,
-            nullptr,
-            nullptr);
-        if (bytes <= 0)
-        {
-            return;
-        }
-
-        std::string utf8(gsl::narrow_cast<size_t>(bytes), '\0');
-        if (WideCharToMultiByte(
-                CP_UTF8,
-                0,
-                input.data(),
-                gsl::narrow_cast<int>(input.size()),
-                utf8.data(),
-                bytes,
-                nullptr,
-                nullptr) != bytes)
-        {
-            return;
-        }
-
-        {
-            std::lock_guard guard{ _inputMutex };
-            _inputQueue.emplace_back(std::move(utf8));
-        }
-        _inputWake.notify_one();
     }
 
     void Resize(uint32_t columns, uint32_t rows) noexcept
     {
-        const auto hpc = _hpc;
-        if (!hpc || !_running)
+        if (_session && _resize)
         {
-            return;
+            _resize(_session, columns, rows);
         }
-
-        const COORD size{
-            gsl::narrow_cast<SHORT>(std::clamp<uint32_t>(columns, 1, SHRT_MAX)),
-            gsl::narrow_cast<SHORT>(std::clamp<uint32_t>(rows, 1, SHRT_MAX)),
-        };
-        LOG_IF_FAILED(ResizePseudoConsole(hpc, size));
     }
 
     void Terminate() noexcept
     {
-        if (_job)
+        if (_session && _terminate)
         {
-            LOG_IF_WIN32_BOOL_FALSE(TerminateJobObject(_job, 1));
+            _terminate(_session);
         }
     }
 
     bool IsRunning() const noexcept
     {
-        return _running;
+        return _session && _isRunning && _isRunning(_session) != FALSE;
     }
 
     void SetExitCallback(ExitCallback callback) noexcept
@@ -492,162 +627,57 @@ public:
 
     void Close() noexcept
     {
-        _stopping = true;
+        if (_session && _destroy)
+        {
+            _destroy(_session);
+        }
+        _session = nullptr;
 
-        if (_job && _running)
-        {
-            TerminateJobObject(_job, 1);
-        }
+        _create = nullptr;
+        _write = nullptr;
+        _resize = nullptr;
+        _terminate = nullptr;
+        _isRunning = nullptr;
+        _destroy = nullptr;
 
-        if (_hpc)
+        if (_module)
         {
-            ClosePseudoConsole(_hpc);
-            _hpc = nullptr;
+            FreeLibrary(_module);
+            _module = nullptr;
         }
-
-        _inputWake.notify_all();
-
-        if (_inputThread.joinable())
-        {
-            _inputThread.join();
-        }
-        if (_outputThread.joinable())
-        {
-            _outputThread.join();
-        }
-        if (_waitThread.joinable())
-        {
-            _waitThread.join();
-        }
-
-        if (_inputWrite)
-        {
-            CloseHandle(_inputWrite);
-            _inputWrite = nullptr;
-        }
-        if (_outputRead)
-        {
-            CloseHandle(_outputRead);
-            _outputRead = nullptr;
-        }
-        if (_process)
-        {
-            CloseHandle(_process);
-            _process = nullptr;
-        }
-        if (_job)
-        {
-            CloseHandle(_job);
-            _job = nullptr;
-        }
-
-        {
-            std::lock_guard guard{ _inputMutex };
-            _inputQueue.clear();
-        }
-
-        _running = false;
-        _stopping = false;
     }
 
 private:
-    void _InputLoop() noexcept
+    using CreateFn = HRESULT(_stdcall*)(
+        LPCWSTR, LPCWSTR, uint32_t, uint32_t, void*, BridgeOutputCallback, BridgeExitCallback, void**);
+    using WriteFn = void(_stdcall*)(void*, LPCWSTR, uint32_t);
+    using ResizeFn = void(_stdcall*)(void*, uint32_t, uint32_t);
+    using TerminateFn = void(_stdcall*)(void*);
+    using IsRunningFn = BOOL(_stdcall*)(void*);
+    using DestroyFn = void(_stdcall*)(void*);
+
+    static void _stdcall _OutputThunk(void* context, LPCWSTR data, uint32_t length) noexcept
     {
-        for (;;)
-        {
-            std::string data;
-            {
-                std::unique_lock lock{ _inputMutex };
-                _inputWake.wait(lock, [this]() noexcept {
-                    return _stopping || !_inputQueue.empty();
-                });
-
-                if (_inputQueue.empty())
-                {
-                    if (_stopping)
-                    {
-                        return;
-                    }
-                    continue;
-                }
-
-                data = std::move(_inputQueue.front());
-                _inputQueue.pop_front();
-            }
-
-            size_t offset = 0;
-            while (offset < data.size() && !_stopping)
-            {
-                DWORD written{};
-                if (!WriteFile(
-                        _inputWrite,
-                        data.data() + offset,
-                        gsl::narrow_cast<DWORD>(data.size() - offset),
-                        &written,
-                        nullptr))
-                {
-                    return;
-                }
-                if (written == 0)
-                {
-                    return;
-                }
-                offset += written;
-            }
-        }
-    }
-
-    void _OutputLoop() noexcept
-    {
-        char buffer[128 * 1024];
-        til::u8state state;
-        std::wstring converted;
-
-        while (!_stopping)
-        {
-            DWORD read{};
-            if (!ReadFile(_outputRead, buffer, sizeof(buffer), &read, nullptr) || read == 0)
-            {
-                break;
-            }
-
-            converted.clear();
-            if (FAILED_LOG(til::u8u16(
-                    { &buffer[0], gsl::narrow_cast<size_t>(read) },
-                    converted,
-                    state)))
-            {
-                continue;
-            }
-
-            if (!converted.empty())
-            {
-                _owner->SendOutput(converted);
-                if (const auto callback = _outputCallback)
-                {
-                    callback(converted.c_str());
-                }
-            }
-        }
-    }
-
-    void _WaitLoop() noexcept
-    {
-        const auto process = _process;
-        if (!process)
+        const auto self = static_cast<MultiKiloTerminalConnectionSession*>(context);
+        if (!self || !self->_owner || !data || length == 0)
         {
             return;
         }
 
-        WaitForSingleObject(process, INFINITE);
-
-        DWORD exitCode{};
-        GetExitCodeProcess(process, &exitCode);
-        _running = false;
-
-        if (!_stopping)
+        self->_owner->SendOutput(std::wstring_view{ data, length });
+        if (const auto callback = self->_outputCallback)
         {
-            if (const auto callback = _exitCallback)
+            const std::wstring copy{ data, length };
+            callback(copy.c_str());
+        }
+    }
+
+    static void _stdcall _ExitThunk(void* context, DWORD exitCode) noexcept
+    {
+        const auto self = static_cast<MultiKiloTerminalConnectionSession*>(context);
+        if (self)
+        {
+            if (const auto callback = self->_exitCallback)
             {
                 callback(exitCode);
             }
@@ -655,22 +685,14 @@ private:
     }
 
     HwndTerminal* _owner{};
-    HPCON _hpc{};
-    HANDLE _inputWrite{};
-    HANDLE _outputRead{};
-    HANDLE _process{};
-    HANDLE _job{};
-
-    std::thread _inputThread;
-    std::thread _outputThread;
-    std::thread _waitThread;
-
-    std::mutex _inputMutex;
-    std::condition_variable _inputWake;
-    std::deque<std::string> _inputQueue;
-
-    std::atomic_bool _running{ false };
-    std::atomic_bool _stopping{ false };
+    HMODULE _module{};
+    void* _session{};
+    CreateFn _create{};
+    WriteFn _write{};
+    ResizeFn _resize{};
+    TerminateFn _terminate{};
+    IsRunningFn _isRunning{};
+    DestroyFn _destroy{};
     ExitCallback _exitCallback{};
     OutputCallback _outputCallback{};
 };
@@ -856,15 +878,14 @@ $charFunction = $charFunction.Substring(0, $absoluteIndex) + $charNew + $charFun
 Write-Normalized $cpp $charFunction
 
 $sessionExports = @'
-HRESULT _stdcall TerminalStartSession(void* terminal, LPCWSTR commandLine, LPCWSTR workingDirectory, BOOL bracketedPasteSupported, uint32_t columns, uint32_t rows)
+HRESULT _stdcall TerminalStartSession(void* terminal, LPCWSTR commandLine, LPCWSTR workingDirectory, uint32_t columns, uint32_t rows)
 try
 {
     const auto publicTerminal = static_cast<HwndTerminal*>(terminal);
     RETURN_HR_IF_NULL(E_INVALIDARG, publicTerminal);
     RETURN_HR_IF_NULL(E_INVALIDARG, commandLine);
 
-    publicTerminal->_bracketedPasteSupported = bracketedPasteSupported != FALSE;
-    publicTerminal->_nativeSession = std::make_unique<MultiKiloNativeSession>(publicTerminal);
+    publicTerminal->_nativeSession = std::make_unique<MultiKiloTerminalConnectionSession>(publicTerminal);
     publicTerminal->_nativeSession->SetExitCallback(publicTerminal->_sessionExitCallback);
     publicTerminal->_nativeSession->SetOutputCallback(publicTerminal->_sessionOutputCallback);
 
@@ -875,7 +896,6 @@ try
         rows);
     if (FAILED(hr))
     {
-        publicTerminal->_bracketedPasteSupported = false;
         publicTerminal->_nativeSession.reset();
     }
     return hr;
@@ -887,7 +907,6 @@ try
 {
     if (const auto publicTerminal = static_cast<HwndTerminal*>(terminal); publicTerminal)
     {
-        publicTerminal->_bracketedPasteSupported = false;
         if (publicTerminal->_nativeSession)
         {
             publicTerminal->_nativeSession->Terminate();
