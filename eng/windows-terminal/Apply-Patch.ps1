@@ -206,6 +206,7 @@ $connectionHppOld = @'
 $connectionHppNew = @'
         uint64_t RootProcessHandle() noexcept;
         void MultiKiloSetJob(HANDLE job) noexcept;
+        void MultiKiloSetExitCallback(void* context, void(__stdcall* callback)(void*, DWORD)) noexcept;
 '@
 Replace-Once $connectionHpp $connectionHppOld $connectionHppNew
 
@@ -215,12 +216,14 @@ $connectionStateOld = @'
 $connectionStateNew = @'
         DWORD _flags{ 0 };
         HANDLE _multiKiloJob{ nullptr };
+        void* _multiKiloExitContext{ nullptr };
+        void(__stdcall* _multiKiloExitCallback)(void*, DWORD){ nullptr };
 '@
 Replace-Once $connectionHpp $connectionStateOld $connectionStateNew
 
 $connectionCpp = "src\cascadia\TerminalConnection\ConptyConnection.cpp"
 $connectionIncludeOld = "#include <winmeta.h>"
-$connectionIncludeNew = "#include <winmeta.h>" + [Environment]::NewLine + "#include <atomic>" + [Environment]::NewLine + "#include <thread>"
+$connectionIncludeNew = "#include <winmeta.h>" + [Environment]::NewLine + "#include <atomic>"
 Replace-Once $connectionCpp $connectionIncludeOld $connectionIncludeNew
 
 $launchAnchor = @'
@@ -230,6 +233,14 @@ $launchReplacement = @'
     void ConptyConnection::MultiKiloSetJob(HANDLE job) noexcept
     {
         _multiKiloJob = job;
+    }
+
+    void ConptyConnection::MultiKiloSetExitCallback(
+        void* context,
+        void(__stdcall* callback)(void*, DWORD)) noexcept
+    {
+        _multiKiloExitContext = context;
+        _multiKiloExitCallback = callback;
     }
 
     void ConptyConnection::_LaunchAttachedClient()
@@ -261,6 +272,30 @@ $processCreatedNew = @'
 '@
 Replace-Once $connectionCpp $processCreatedOld $processCreatedNew
 
+
+$disconnectOld = @'
+        _transitionToState(exitCode == 0 || exitCode == STILL_ACTIVE ? ConnectionState::Closed : ConnectionState::Failed);
+        _indicateExitWithStatus(exitCode);
+    }
+    CATCH_LOG()
+
+    void ConptyConnection::WriteInput(const winrt::array_view<const char16_t> buffer)
+'@
+$disconnectNew = @'
+        _transitionToState(exitCode == 0 || exitCode == STILL_ACTIVE ? ConnectionState::Closed : ConnectionState::Failed);
+        _indicateExitWithStatus(exitCode);
+
+        if (const auto callback = _multiKiloExitCallback)
+        {
+            callback(_multiKiloExitContext, exitCode);
+        }
+    }
+    CATCH_LOG()
+
+    void ConptyConnection::WriteInput(const winrt::array_view<const char16_t> buffer)
+'@
+Replace-Once $connectionCpp $disconnectOld $disconnectNew
+
 $connectionBridge = @'
 
 // MultiKilo uses this tiny C ABI to consume the exact Windows Terminal
@@ -272,10 +307,8 @@ namespace
 
     struct MultiKiloConptySession
     {
-        std::unique_ptr<winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection> connection;
+        winrt::com_ptr<winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection> connection;
         wil::unique_handle job;
-        wil::unique_handle process;
-        std::thread waitThread;
         std::atomic_bool running{ false };
         std::atomic<void*> context{ nullptr };
         std::atomic<MultiKiloOutputCallback> outputCallback{ nullptr };
@@ -314,7 +347,7 @@ try
         &jobInfo,
         sizeof(jobInfo)));
 
-    holder->connection = std::make_unique<winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection>();
+    holder->connection = winrt::make_self<winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection>();
     holder->connection->MultiKiloSetJob(holder->job.get());
 
     const auto settings = winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection::CreateSettings(
@@ -331,6 +364,24 @@ try
     holder->connection->Initialize(settings);
 
     const auto raw = holder.get();
+    holder->connection->MultiKiloSetExitCallback(
+        raw,
+        [](void* context, DWORD exitCode) noexcept {
+            const auto session = static_cast<MultiKiloConptySession*>(context);
+            if (!session)
+            {
+                return;
+            }
+
+            session->running = false;
+            const auto callback = session->exitCallback.load();
+            const auto callbackContext = session->context.load();
+            if (callback && callbackContext)
+            {
+                callback(callbackContext, exitCode);
+            }
+        });
+
     holder->connection->TerminalOutput([raw](const winrt::array_view<const char16_t> output) {
         const auto callback = raw->outputCallback.load();
         const auto callbackContext = raw->context.load();
@@ -345,32 +396,7 @@ try
 
     holder->connection->Start();
 
-    const auto rootProcess = reinterpret_cast<HANDLE>(holder->connection->RootProcessHandle());
-    RETURN_HR_IF_NULL(E_FAIL, rootProcess);
-    RETURN_IF_WIN32_BOOL_FALSE(DuplicateHandle(
-        GetCurrentProcess(),
-        rootProcess,
-        GetCurrentProcess(),
-        holder->process.addressof(),
-        0,
-        FALSE,
-        DUPLICATE_SAME_ACCESS));
-
     holder->running = true;
-    holder->waitThread = std::thread([raw]() noexcept {
-        WaitForSingleObject(raw->process.get(), INFINITE);
-
-        DWORD exitCode{};
-        GetExitCodeProcess(raw->process.get(), &exitCode);
-        raw->running = false;
-
-        const auto callback = raw->exitCallback.load();
-        const auto callbackContext = raw->context.load();
-        if (callback && callbackContext)
-        {
-            callback(callbackContext, exitCode);
-        }
-    });
 
     *session = holder.release();
     return S_OK;
@@ -445,12 +471,8 @@ try
 
     if (holder->connection)
     {
+        holder->connection->MultiKiloSetExitCallback(nullptr, nullptr);
         holder->connection->Close();
-    }
-
-    if (holder->waitThread.joinable())
-    {
-        holder->waitThread.join();
     }
 
     holder->running = false;
@@ -548,9 +570,10 @@ public:
     {
         Close();
 
-        // Keep the component loaded for the process lifetime. The bridge owns
-        // the concrete ConptyConnection implementation directly (unique_ptr),
-        // so there is no WinRT activation or deferred final_release involved.
+        // Keep the component loaded for the process lifetime. Upstream
+        // ConptyConnection uses get_strong()/final_release from its output
+        // thread, so C++/WinRT owns its lifetime and deferred release code must
+        // never run from an unloaded module.
         static const HMODULE terminalConnectionModule = LoadLibraryW(L"TerminalConnection.dll");
         _module = terminalConnectionModule;
         if (!_module)
