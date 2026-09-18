@@ -2,7 +2,6 @@ name: windows
 
 on:
   push:
-  pull_request:
   workflow_dispatch:
     inputs:
       full_acceptance:
@@ -17,6 +16,7 @@ concurrency:
 
 jobs:
   build-test:
+    if: github.ref != 'refs/heads/main' || inputs.full_acceptance == true
     runs-on: windows-2022
     timeout-minutes: 90
 
@@ -55,7 +55,8 @@ jobs:
           $changed = @(git diff-tree --no-commit-id --name-only -r HEAD)
           $changed | ForEach-Object { Write-Host "changed: $_" }
           $message = git log -1 --pretty=%B
-          $forceAll = $message -match '\[smoke:all\]'
+          $forceRelease = $message -match '\[release\]'
+          $forceAll = $forceRelease -or $message -match '\[smoke:all\]'
           $forceClipboard = $forceAll -or $message -match '\[smoke:clipboard\]'
           $forcePaste = $forceAll -or $message -match '\[smoke:paste\]'
           $forceSessions = $forceAll -or $message -match '\[smoke:sessions\]'
@@ -89,14 +90,14 @@ jobs:
               "src/MultiKilo/Terminal/ProjectSession.cs",
               "src/MultiKilo/MainWindow.xaml.cs",
               "src/TerminalWpfPatched/TerminalContainer.cs",
-              "src/TerminalWpfPatched/TerminalControl.xaml.cs",
-              "src/MultiKilo/ThirdParty/EasyWindowsTerminalControl/EasyTerminalControl.cs"
+              "src/TerminalWpfPatched/TerminalControl.xaml.cs"
             )
           }).Count -gt 0
 
           "clipboard=$($clipboard.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "paste=$($paste.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "sessions=$($sessions.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "release=$($forceRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
 
       - name: Restore managed dependencies
         run: dotnet restore .\MultiKilo.sln
@@ -120,12 +121,12 @@ jobs:
         run: .\.github\scripts\Run-Smoke.ps1 sessions
 
       - name: Publish portable x64 folder
-        if: github.ref == 'refs/heads/main' || inputs.full_acceptance == true
+        if: steps.changes.outputs.release == 'true' || inputs.full_acceptance == true
         shell: pwsh
         run: .\build.ps1 -SkipTerminalBuild
 
       - name: Inspect output
-        if: github.ref == 'refs/heads/main' || inputs.full_acceptance == true
+        if: steps.changes.outputs.release == 'true' || inputs.full_acceptance == true
         shell: pwsh
         run: |
           $exe = ".\dist\MultiKilo-win-x64\MultiKilo.exe"
@@ -134,7 +135,7 @@ jobs:
           Get-ChildItem .\dist\MultiKilo-win-x64 -File | Sort-Object Name | Select-Object Name, Length | Format-Table -AutoSize
 
       - uses: actions/upload-artifact@v4
-        if: github.ref == 'refs/heads/main' || inputs.full_acceptance == true
+        if: steps.changes.outputs.release == 'true' || inputs.full_acceptance == true
         with:
           name: MultiKilo-win-x64
           path: dist/MultiKilo-win-x64/
