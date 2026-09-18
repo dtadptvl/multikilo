@@ -23,10 +23,10 @@ if (-not (Test-Path $vswhere)) {
     throw "vswhere.exe was not found. Visual Studio with the C++ Desktop workload is required."
 }
 
-$msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" |
+$msbuild = & $vswhere -version "[17.0,18.0)" -products * -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" |
     Select-Object -First 1
 if (-not $msbuild) {
-    throw "MSBuild.exe was not found."
+    throw "Visual Studio 2022 MSBuild (17.x) was not found. Windows Terminal v1.25 requires the v143 UWP toolset."
 }
 
 $sdkRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\Lib"
