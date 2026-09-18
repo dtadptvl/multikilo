@@ -63,23 +63,33 @@ jobs:
           $native = @($changed | Where-Object {
             $_ -in @(
               "eng/windows-terminal/Apply-Patch.ps1",
-              "eng/windows-terminal/Build-PatchedTerminal.ps1",
+              "eng/windows-terminal/Build-PatchedTerminal.ps1"
+            )
+          }).Count -gt 0
+
+          $clipboard = $native -or $forceClipboard -or @($changed | Where-Object {
+            $_ -in @(
               "src/TerminalWpfPatched/NativeMethods.cs",
               "src/TerminalWpfPatched/TerminalContainer.cs",
               "src/TerminalWpfPatched/TerminalControl.xaml.cs"
             )
           }).Count -gt 0
 
-          $clipboard = $native -or $forceClipboard
-
           $paste = $native -or $forcePaste -or @($changed | Where-Object {
-            $_ -eq "src/MultiKilo/Terminal/ProjectSession.cs"
+            $_ -in @(
+              "src/MultiKilo/Terminal/ProjectSession.cs",
+              "src/TerminalWpfPatched/NativeMethods.cs",
+              "src/TerminalWpfPatched/TerminalContainer.cs",
+              "src/TerminalWpfPatched/TerminalControl.xaml.cs"
+            )
           }).Count -gt 0
 
           $sessions = $native -or $forceSessions -or @($changed | Where-Object {
             $_ -in @(
               "src/MultiKilo/Terminal/ProjectSession.cs",
               "src/MultiKilo/MainWindow.xaml.cs",
+              "src/TerminalWpfPatched/TerminalContainer.cs",
+              "src/TerminalWpfPatched/TerminalControl.xaml.cs",
               "src/MultiKilo/ThirdParty/EasyWindowsTerminalControl/EasyTerminalControl.cs"
             )
           }).Count -gt 0

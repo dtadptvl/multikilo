@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using Microsoft.Terminal.Wpf;
 using MultiKilo.Models;
 using MultiKilo.Services;
 using MultiKilo.Terminal;
@@ -181,7 +182,6 @@ public partial class MainWindow : Window
         {
             SetActionButtonsEnabled(false);
             await session.TerminateAsync();
-            oldView?.DisconnectConPTYTerm();
             DetachView(oldView);
             await session.StartAsync(
                 continueSession: true,
@@ -252,7 +252,6 @@ public partial class MainWindow : Window
 
         if (session is not null)
         {
-            session.View?.DisconnectConPTYTerm();
             DetachView(session.View);
             _sessions.Remove(project.Id);
         }
@@ -292,7 +291,6 @@ public partial class MainWindow : Window
         {
             SetActionButtonsEnabled(false);
             ProjectsList.SelectedItem = project;
-            oldView?.DisconnectConPTYTerm();
             DetachView(oldView);
             await session.StartAsync(
                 continueSession,
@@ -311,7 +309,7 @@ public partial class MainWindow : Window
     }
 
     private async Task PrepareTerminalViewAsync(
-        EasyWindowsTerminalControl.EasyTerminalControl view)
+        TerminalControl view)
     {
         AttachView(view);
         ShowSelectedTerminal();
@@ -343,13 +341,13 @@ public partial class MainWindow : Window
             DispatcherPriority.Loaded);
 
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
-        while (view.Terminal.NativeTerminalForTesting == IntPtr.Zero &&
+        while (view.NativeTerminalForTesting == IntPtr.Zero &&
                DateTime.UtcNow < deadline)
         {
             await Task.Delay(20);
         }
 
-        if (view.Terminal.NativeTerminalForTesting == IntPtr.Zero)
+        if (view.NativeTerminalForTesting == IntPtr.Zero)
         {
             throw new InvalidOperationException(
                 "Native Windows Terminal control did not initialize.");

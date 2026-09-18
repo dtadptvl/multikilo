@@ -34,24 +34,46 @@ namespace Microsoft.Terminal.Wpf
                 ctrl,
                 shift);
 
-        internal event Action<uint> NativeSessionExited
+        /// <summary>
+        /// Raised when the native ConPTY session exits.
+        /// </summary>
+        public event Action<uint> SessionExited
         {
-            add => this.termContainer.NativeSessionExited += value;
-            remove => this.termContainer.NativeSessionExited -= value;
+            add => this.termContainer.SessionExited += value;
+            remove => this.termContainer.SessionExited -= value;
         }
 
-        internal event Action<string> NativeSessionOutput
+        internal event Action<string> SessionOutputForTesting
         {
-            add => this.termContainer.NativeSessionOutput += value;
-            remove => this.termContainer.NativeSessionOutput -= value;
+            add => this.termContainer.SessionOutputForTesting += value;
+            remove => this.termContainer.SessionOutputForTesting -= value;
         }
 
-        internal void StartNativeSession(string commandLine, string workingDirectory) =>
-            this.termContainer.StartNativeSession(commandLine, workingDirectory);
+        /// <summary>
+        /// Starts a command inside the terminal-owned native ConPTY session.
+        /// </summary>
+        public void StartSession(string commandLine, string workingDirectory) =>
+            this.termContainer.StartSession(commandLine, workingDirectory);
 
-        internal void TerminateNativeSession() => this.termContainer.TerminateNativeSession();
+        /// <summary>
+        /// Terminates only this terminal's native ConPTY process tree.
+        /// </summary>
+        public void TerminateSession() => this.termContainer.TerminateSession();
 
-        internal bool NativeSessionIsRunning => this.termContainer.NativeSessionIsRunning;
+        /// <summary>
+        /// Gets whether this terminal owns a live native ConPTY session.
+        /// </summary>
+        public bool IsSessionRunning => this.termContainer.IsSessionRunning;
+
+        /// <summary>
+        /// Copies the active terminal selection using the native terminal clipboard path.
+        /// </summary>
+        public bool Copy() => this.termContainer.CopySelectionToClipboard();
+
+        /// <summary>
+        /// Pastes text using the native terminal clipboard and bracketed-paste path.
+        /// </summary>
+        public void Paste() => this.termContainer.PasteFromClipboard();
 
         /// <summary>
         /// Initializes a new instance of the <see cref="TerminalControl"/> class.
@@ -85,14 +107,6 @@ namespace Microsoft.Terminal.Wpf
         {
             get => this.termContainer.AutoResize;
             set => this.termContainer.AutoResize = value;
-        }
-
-        /// <summary>
-        /// Sets the connection to a terminal backend.
-        /// </summary>
-        public ITerminalConnection Connection
-        {
-            set => this.termContainer.Connection = value;
         }
 
         /// <summary>

@@ -137,7 +137,7 @@ internal static class TerminalSmokeTest
                 public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
                 [DllImport("kernel32.dll", SetLastError = true)]
                 [return: MarshalAs(UnmanagedType.Bool)]
-                public static extern bool SetConsoleCP(uint wCodePageID);
+                public static extern bool ReadConsoleW(IntPtr hConsoleInput, char[] buffer, uint charsToRead, out uint charsRead, IntPtr inputControl);
             }
             "@
 
@@ -154,10 +154,6 @@ internal static class TerminalSmokeTest
             if (-not [MultiKiloConsoleMode]::SetConsoleMode($stdin, $rawMode)) {
                 throw "SetConsoleMode failed"
             }
-            if (-not [MultiKiloConsoleMode]::SetConsoleCP(65001)) {
-                throw "SetConsoleCP failed"
-            }
-
             $esc = [char]27
             $crlf = ([char]13).ToString() + ([char]10)
             $start = "$esc[200~"
@@ -165,34 +161,23 @@ internal static class TerminalSmokeTest
             [Console]::Write("$esc[?2004h")
             [Console]::Write("MULTIKILO_BRACKET_READY" + $crlf)
 
-            $stream = [Console]::OpenStandardInput()
-            $bytes = [System.Collections.Generic.List[byte]]::new()
-            $endBytes = [byte[]](27, 91, 50, 48, 49, 126)
-            while ($bytes.Count -lt 400000) {
-                $value = $stream.ReadByte()
-                if ($value -lt 0) { break }
-                $bytes.Add([byte]$value)
-
-                if ($bytes.Count -ge $endBytes.Length) {
-                    $matchesEnd = $true
-                    for ($i = 0; $i -lt $endBytes.Length; $i++) {
-                        if ($bytes[$bytes.Count - $endBytes.Length + $i] -ne $endBytes[$i]) {
-                            $matchesEnd = $false
-                            break
-                        }
-                    }
-                    if ($matchesEnd) { break }
+            $builder = [System.Text.StringBuilder]::new()
+            $buffer = New-Object char[] 4096
+            while ($builder.Length -lt 200000) {
+                [uint32]$read = 0
+                if (-not [MultiKiloConsoleMode]::ReadConsoleW($stdin, $buffer, [uint32]$buffer.Length, [ref]$read, [IntPtr]::Zero)) {
+                    throw "ReadConsoleW failed"
                 }
+                if ($read -eq 0) { break }
+                [void]$builder.Append($buffer, 0, [int]$read)
+                if ($builder.ToString().EndsWith($end)) { break }
             }
 
-            $byteArray = $bytes.ToArray()
-            $text = [System.Text.Encoding]::UTF8.GetString($byteArray)
+            $text = $builder.ToString()
             $isBracketed = $text.StartsWith($start) -and $text.EndsWith($end)
             $hasUnicode = $text.Contains("Tiếng Việt")
             $crCount = ($text.ToCharArray() | Where-Object { $_ -eq [char]13 }).Count
-            $previewCount = [Math]::Min(160, $byteArray.Length)
-            $previewHex = -join ($byteArray[0..($previewCount - 1)] | ForEach-Object { $_.ToString("X2") })
-            [Console]::Write("MULTIKILO_BRACKET_RESULT:${isBracketed}:${hasUnicode}:${crCount}:HEX=${previewHex}" + $crlf)
+            [Console]::Write("MULTIKILO_BRACKET_RESULT:${isBracketed}:${hasUnicode}:${crCount}" + $crlf)
             """,
             new UTF8Encoding(false));
 
@@ -202,8 +187,8 @@ internal static class TerminalSmokeTest
         var outputGate = new object();
         uint? sessionExitCode = null;
 
-        terminal.NativeSessionOutput += OnOutput;
-        terminal.NativeSessionExited += OnExit;
+        terminal.SessionOutputForTesting += OnOutput;
+        terminal.SessionExited += OnExit;
 
         try
         {
@@ -211,7 +196,7 @@ internal static class TerminalSmokeTest
             await PumpAsync();
             terminal.SetTheme(CreateTheme(), "Cascadia Mono", 13);
 
-            terminal.StartNativeSession(
+            terminal.StartSession(
                 $"pwsh.exe -NoLogo -NoProfile -File \"{scriptPath}\"",
                 tempDir);
 
@@ -228,7 +213,7 @@ internal static class TerminalSmokeTest
                 return Fail(
                     55,
                     "Native ConPTY test app never enabled bracketed paste mode. " +
-                    $"Running={terminal.NativeSessionIsRunning}; ExitCode={sessionExitCode?.ToString() ?? "<none>"}; " +
+                    $"Running={terminal.IsSessionRunning}; ExitCode={sessionExitCode?.ToString() ?? "<none>"}; " +
                     $"Output={snapshot.Replace("\x1b", "<ESC>")}");
             }
 
@@ -265,9 +250,9 @@ internal static class TerminalSmokeTest
         }
         finally
         {
-            terminal.NativeSessionOutput -= OnOutput;
-            terminal.NativeSessionExited -= OnExit;
-            terminal.TerminateNativeSession();
+            terminal.SessionOutputForTesting -= OnOutput;
+            terminal.SessionExited -= OnExit;
+            terminal.TerminateSession();
 
             try
             {
@@ -376,23 +361,23 @@ internal static class TerminalSmokeTest
             window.Height = 390;
             await Task.Delay(150);
 
-            if (sessions.Any(static session => !session.Terminal.NativeSessionIsRunning))
+            if (sessions.Any(static session => !session.Terminal.IsSessionRunning))
             {
                 return Fail(58, "Project switching or resize stopped a live native session.");
             }
 
-            sessions[1].Terminal.TerminateNativeSession();
+            sessions[1].Terminal.TerminateSession();
 
             await sessions[1].Exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            if (!sessions[0].Terminal.NativeSessionIsRunning ||
-                !sessions[2].Terminal.NativeSessionIsRunning)
+            if (!sessions[0].Terminal.IsSessionRunning ||
+                !sessions[2].Terminal.IsSessionRunning)
             {
                 return Fail(60, "Terminating one native Job Object affected another project session.");
             }
 
-            sessions[0].Terminal.TerminateNativeSession();
-            sessions[2].Terminal.TerminateNativeSession();
+            sessions[0].Terminal.TerminateSession();
+            sessions[2].Terminal.TerminateSession();
 
             return 0;
         }
@@ -400,7 +385,7 @@ internal static class TerminalSmokeTest
         {
             foreach (var session in sessions)
             {
-                session.Terminal.TerminateNativeSession();
+                session.Terminal.TerminateSession();
             }
 
             window.Close();
@@ -560,14 +545,14 @@ internal static class TerminalSmokeTest
         public NativeSmokeSession(TerminalControl terminal)
         {
             Terminal = terminal;
-            Terminal.NativeSessionOutput += data =>
+            Terminal.SessionOutputForTesting += data =>
             {
                 lock (_outputGate)
                 {
                     _output.Append(data);
                 }
             };
-            Terminal.NativeSessionExited += _ => Exited.TrySetResult(true);
+            Terminal.SessionExited += _ => Exited.TrySetResult(true);
         }
 
         public TerminalControl Terminal { get; }
@@ -576,7 +561,7 @@ internal static class TerminalSmokeTest
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void Start(string commandLine, string workingDirectory) =>
-            Terminal.StartNativeSession(commandLine, workingDirectory);
+            Terminal.StartSession(commandLine, workingDirectory);
 
         public bool ContainsOutput(string value)
         {

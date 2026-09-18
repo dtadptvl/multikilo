@@ -1,5 +1,5 @@
 using System.Windows;
-using EasyWindowsTerminalControl;
+using System.Windows.Input;
 using Microsoft.Terminal.Wpf;
 using MultiKilo.Models;
 
@@ -24,14 +24,14 @@ public sealed class ProjectSession
 
     public ProjectDefinition Project { get; }
     public ProjectSessionState State { get; private set; } = ProjectSessionState.Stopped;
-    public EasyTerminalControl? View { get; private set; }
+    public TerminalControl? View { get; private set; }
     public bool IsLive => State is ProjectSessionState.Starting or ProjectSessionState.Running;
 
     public event EventHandler? StateChanged;
 
     public async Task StartAsync(
         bool continueSession,
-        Func<EasyTerminalControl, Task> prepareViewAsync)
+        Func<TerminalControl, Task> prepareViewAsync)
     {
         ArgumentNullException.ThrowIfNull(prepareViewAsync);
 
@@ -49,19 +49,20 @@ public sealed class ProjectSession
 
         View = view;
         _exitSignal = exitSignal;
-        view.Terminal.NativeSessionExited += OnNativeSessionExited;
+        view.SessionExited += OnSessionExited;
 
         try
         {
             await prepareViewAsync(view);
+            view.SetTheme(CreateTheme(), "Cascadia Mono", 13);
 
             var kilo = continueSession ? "kilo --auto --continue" : "kilo --auto";
             var commandLine = $"pwsh.exe -NoLogo -NoProfile -Command \"{kilo}; exit\"";
-            view.Terminal.StartNativeSession(commandLine, Project.Folder);
+            view.StartSession(commandLine, Project.Folder);
 
             if (generation != _generation)
             {
-                view.Terminal.TerminateNativeSession();
+                view.TerminateSession();
                 return;
             }
 
@@ -78,7 +79,7 @@ public sealed class ProjectSession
     public async Task TerminateAsync()
     {
         var view = View;
-        if (!IsLive && (view is null || !view.Terminal.NativeSessionIsRunning))
+        if (!IsLive && (view is null || !view.IsSessionRunning))
         {
             State = ProjectSessionState.Stopped;
             RaiseStateChanged();
@@ -90,7 +91,7 @@ public sealed class ProjectSession
 
         try
         {
-            view?.Terminal.TerminateNativeSession();
+            view?.TerminateSession();
 
             if (exitSignal is not null)
             {
@@ -110,7 +111,7 @@ public sealed class ProjectSession
         }
     }
 
-    private void OnNativeSessionExited(uint exitCode)
+    private void OnSessionExited(uint exitCode)
     {
         _exitSignal?.TrySetResult(exitCode);
 
@@ -123,28 +124,42 @@ public sealed class ProjectSession
         RaiseStateChanged();
     }
 
-    private void CleanupFailedStart(EasyTerminalControl view)
+    private void CleanupFailedStart(TerminalControl view)
     {
         ++_generation;
 
         try
         {
-            view.Terminal.TerminateNativeSession();
+            view.TerminateSession();
         }
         catch
         {
         }
 
-        view.Terminal.NativeSessionExited -= OnNativeSessionExited;
+        view.SessionExited -= OnSessionExited;
         _exitSignal = null;
         View = null;
         State = ProjectSessionState.Stopped;
         RaiseStateChanged();
     }
 
-    private static EasyTerminalControl CreateTerminalView()
+    private static TerminalControl CreateTerminalView()
     {
-        var theme = new TerminalTheme
+        var view = new TerminalControl
+        {
+            AutoResize = true,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Focusable = true
+        };
+
+        KeyboardNavigation.SetTabNavigation(view, KeyboardNavigationMode.Contained);
+        KeyboardNavigation.SetDirectionalNavigation(view, KeyboardNavigationMode.Contained);
+        return view;
+    }
+
+    private static TerminalTheme CreateTheme() =>
+        new()
         {
             DefaultBackground = 0x0C0C0C,
             DefaultForeground = 0xCCCCCC,
@@ -158,18 +173,6 @@ public sealed class ProjectSession
                 0xFF783B, 0x9E00B4, 0xD6D661, 0xF2F2F2
             ]
         };
-
-        return new EasyTerminalControl
-        {
-            InputCapture = EasyTerminalControl.INPUT_CAPTURE.TabKey |
-                           EasyTerminalControl.INPUT_CAPTURE.DirectionKeys,
-            FontFamilyWhenSettingTheme = new System.Windows.Media.FontFamily("Cascadia Mono"),
-            FontSizeWhenSettingTheme = 13,
-            Theme = theme,
-            HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch
-        };
-    }
 
     private void RaiseStateChanged() => StateChanged?.Invoke(this, EventArgs.Empty);
 }
