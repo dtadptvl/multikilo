@@ -209,9 +209,13 @@ internal static class TerminalSmokeTest
     private static string CreateLargePastePayload()
     {
         const string line = "Tiếng Việt — Trường Sa — Unicode ✓ — MultiKilo paste test 0123456789\n";
-        var builder = new StringBuilder(1_100_000);
+        const int targetBytes = 1_048_576;
 
-        while (Encoding.UTF8.GetByteCount(builder.ToString()) < 1_048_576)
+        var lineBytes = Encoding.UTF8.GetByteCount(line);
+        var repeats = (targetBytes + lineBytes - 1) / lineBytes;
+        var builder = new StringBuilder(line.Length * repeats);
+
+        for (var i = 0; i < repeats; i++)
         {
             builder.Append(line);
         }
