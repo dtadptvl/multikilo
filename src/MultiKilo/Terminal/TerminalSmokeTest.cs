@@ -366,7 +366,7 @@ internal static class TerminalSmokeTest
             AutoResize = true,
             Width = 760,
             Height = 440,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch
         };
 
