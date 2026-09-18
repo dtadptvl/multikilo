@@ -55,18 +55,55 @@ try {
 
     & $applyPatch -SourceRoot $sourceDir
 
-    $project = Join-Path $sourceDir "src\cascadia\TerminalControl\dll\TerminalControl.vcxproj"
-    $arguments = @(
-        $project,
-        "/restore",
+    $nuget = (Get-Command "nuget.exe" -ErrorAction SilentlyContinue).Source
+    if (-not $nuget) {
+        $nuget = (Get-Command "nuget" -ErrorAction SilentlyContinue).Source
+    }
+    if (-not $nuget) {
+        throw "nuget.exe was not found on PATH."
+    }
+
+    $nugetConfig = Join-Path $sourceDir "NuGet.config"
+    $packagesDir = Join-Path $sourceDir "packages"
+
+    # Match the upstream Windows Terminal restore pipeline. Native projects
+    # still consume packages.config dependencies from the repository-local
+    # packages directory, so MSBuild /restore alone is insufficient.
+    Invoke-Native $nuget @(
+        "restore",
+        (Join-Path $sourceDir "build\packages.config"),
+        "-PackagesDirectory", $packagesDir,
+        "-ConfigFile", $nugetConfig,
+        "-NonInteractive"
+    )
+
+    $solution = Join-Path $sourceDir "OpenConsole.slnx"
+    Invoke-Native $msbuild @(
+        $solution,
+        "/t:Restore",
         "/m",
         "/p:Configuration=$Configuration",
         "/p:Platform=x64",
-        "/p:WindowsTargetPlatformVersion=$sdkVersion",
-        "/p:OpenConsoleDir=$sourceDir\",
-        "/p:SolutionDir=$sourceDir\"
+        "/p:WindowsTargetPlatformVersion=$sdkVersion"
     )
-    Invoke-Native $msbuild $arguments
+
+    Invoke-Native $nuget @(
+        "restore",
+        (Join-Path $sourceDir "dep\nuget\packages.config"),
+        "-PackagesDirectory", $packagesDir,
+        "-ConfigFile", $nugetConfig,
+        "-NonInteractive"
+    )
+
+    Invoke-Native $msbuild @(
+        $solution,
+        "/t:Terminal\Control\TerminalControl",
+        "/m",
+        "/p:Configuration=$Configuration",
+        "/p:Platform=x64",
+        "/p:GenerateAppxPackageOnBuild=false",
+        "/p:WindowsTargetPlatformVersion=$sdkVersion"
+    )
 }
 finally {
     Pop-Location
