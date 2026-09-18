@@ -1,6 +1,7 @@
 using System.Windows;
 using System.IO;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using EasyWindowsTerminalControl;
@@ -60,6 +61,46 @@ internal static class TerminalSmokeTest
             window.Width = 680;
             window.Height = 380;
             await Task.Delay(150);
+
+            foreach (UIElement child in host.Children)
+            {
+                child.Visibility = Visibility.Hidden;
+            }
+
+            sessions[0].View.Visibility = Visibility.Visible;
+            sessions[0].View.Focus();
+            await System.Windows.Application.Current.Dispatcher.InvokeAsync(
+                () => { },
+                DispatcherPriority.ApplicationIdle);
+
+            var windowHwnd = new WindowInteropHelper(window).Handle;
+            var terminalHwnd = NativeTerminalClipboard.FindVisibleTerminalDescendant(windowHwnd);
+            if (terminalHwnd == IntPtr.Zero)
+            {
+                return 23;
+            }
+
+            const string nativePasteToken = "MULTIKILO_NATIVE_TEXT_PASTE";
+            System.Windows.Clipboard.SetText($"Write-Output '{nativePasteToken}'");
+            sessions[0].Term.BeginNativePaste();
+            try
+            {
+                NativeTerminalClipboard.InvokeNativeCopyOrPaste(terminalHwnd);
+            }
+            finally
+            {
+                sessions[0].Term.EndNativePaste();
+            }
+
+            await Task.Delay(250);
+            sessions[0].Term.WriteToTerm("\r");
+            await Task.Delay(500);
+
+            if (!sessions[0].Term.GetConsoleText(stripVTCodes: false)
+                    .Contains(nativePasteToken, StringComparison.Ordinal))
+            {
+                return 24;
+            }
 
             for (var i = 0; i < sessions.Count; i++)
             {

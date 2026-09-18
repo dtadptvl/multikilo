@@ -24,6 +24,26 @@ internal static class NativeTerminalClipboard
 
     public static bool HasUnicodeText() => IsClipboardFormatAvailable(CfUnicodeText);
 
+    public static IntPtr FindVisibleTerminalDescendant(IntPtr rootHwnd)
+    {
+        IntPtr found = IntPtr.Zero;
+        EnumChildWindows(
+            rootHwnd,
+            (hwnd, _) =>
+            {
+                if (IsWindowVisible(hwnd) && IsTerminalWindow(hwnd))
+                {
+                    found = hwnd;
+                    return false;
+                }
+
+                return true;
+            },
+            IntPtr.Zero);
+
+        return found;
+    }
+
     public static bool HasSelection(IntPtr hwnd)
     {
         if (!IsTerminalWindow(hwnd))
@@ -44,6 +64,16 @@ internal static class NativeTerminalClipboard
 
         SendMessageW(hwnd, WmRightButtonDown, IntPtr.Zero, IntPtr.Zero);
     }
+
+    private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumChildWindows(IntPtr parentHwnd, EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr hwnd);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassNameW(IntPtr hwnd, StringBuilder className, int maxCount);
