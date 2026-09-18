@@ -228,7 +228,25 @@ internal static class TerminalSmokeTest
                 }
             }
 
-            await Task.Delay(250);
+            // TermReady means the pseudo console exists; it does not mean the
+            // shell has finished startup and is ready to execute input. Establish
+            // that boundary explicitly so the keyboard test measures TerminalCore
+            // input translation rather than PowerShell startup timing.
+            for (var i = 0; i < sessions.Count; i++)
+            {
+                sessions[i].Term.WriteToTerm(
+                    $"Write-Output 'MULTIKILO_SHELL_READY_{i + 1}'\r");
+            }
+
+            if (!await WaitForConditionAsync(
+                    () => sessions.Select(
+                            static (session, index) =>
+                                session.ContainsOutput($"MULTIKILO_SHELL_READY_{index + 1}"))
+                        .All(static ready => ready),
+                    TimeSpan.FromSeconds(10)))
+            {
+                return Fail(42, "PowerShell sessions did not become command-ready.");
+            }
 
             var keyboardCommand = "Write-Output 'MULTIKILO_KEYBOARD_OK'";
             await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
