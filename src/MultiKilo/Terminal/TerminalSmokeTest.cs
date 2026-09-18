@@ -152,8 +152,10 @@ internal static class TerminalSmokeTest
         using var host = new HiddenTerminalWindow(terminal);
         var output = new StringBuilder();
         var outputGate = new object();
+        uint? sessionExitCode = null;
 
         terminal.NativeSessionOutput += OnOutput;
+        terminal.NativeSessionExited += OnExit;
 
         try
         {
@@ -169,7 +171,17 @@ internal static class TerminalSmokeTest
                     () => ContainsOutput("MULTIKILO_BRACKET_READY"),
                     TimeSpan.FromSeconds(10)))
             {
-                return Fail(55, "Native ConPTY test app never enabled bracketed paste mode.");
+                string snapshot;
+                lock (outputGate)
+                {
+                    snapshot = output.ToString();
+                }
+
+                return Fail(
+                    55,
+                    "Native ConPTY test app never enabled bracketed paste mode. " +
+                    $"Running={terminal.NativeSessionIsRunning}; ExitCode={sessionExitCode?.ToString() ?? "<none>"}; " +
+                    $"Output={snapshot.Replace("\x1b", "<ESC>")}");
             }
 
             var payload = Create288LinePastePayload();
@@ -206,6 +218,7 @@ internal static class TerminalSmokeTest
         finally
         {
             terminal.NativeSessionOutput -= OnOutput;
+            terminal.NativeSessionExited -= OnExit;
             terminal.TerminateNativeSession();
 
             try
@@ -223,6 +236,11 @@ internal static class TerminalSmokeTest
             {
                 output.Append(data);
             }
+        }
+
+        void OnExit(uint exitCode)
+        {
+            sessionExitCode = exitCode;
         }
 
         bool ContainsOutput(string value)

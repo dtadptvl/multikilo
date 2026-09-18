@@ -54,6 +54,11 @@ jobs:
         run: |
           $changed = @(git diff-tree --no-commit-id --name-only -r HEAD)
           $changed | ForEach-Object { Write-Host "changed: $_" }
+          $message = git log -1 --pretty=%B
+          $forceAll = $message -match '\[smoke:all\]'
+          $forceClipboard = $forceAll -or $message -match '\[smoke:clipboard\]'
+          $forcePaste = $forceAll -or $message -match '\[smoke:paste\]'
+          $forceSessions = $forceAll -or $message -match '\[smoke:sessions\]'
 
           $native = @($changed | Where-Object {
             $_ -in @(
@@ -65,20 +70,14 @@ jobs:
             )
           }).Count -gt 0
 
-          $clipboard = $native -or @($changed | Where-Object {
-            $_ -eq "src/MultiKilo/Terminal/TerminalSmokeTest.cs"
+          $clipboard = $native -or $forceClipboard
+
+          $paste = $native -or $forcePaste -or @($changed | Where-Object {
+            $_ -eq "src/MultiKilo/Terminal/ProjectSession.cs"
           }).Count -gt 0
 
-          $paste = $native -or @($changed | Where-Object {
+          $sessions = $native -or $forceSessions -or @($changed | Where-Object {
             $_ -in @(
-              "src/MultiKilo/Terminal/TerminalSmokeTest.cs",
-              "src/MultiKilo/Terminal/ProjectSession.cs"
-            )
-          }).Count -gt 0
-
-          $sessions = $native -or @($changed | Where-Object {
-            $_ -in @(
-              "src/MultiKilo/Terminal/TerminalSmokeTest.cs",
               "src/MultiKilo/Terminal/ProjectSession.cs",
               "src/MultiKilo/MainWindow.xaml.cs",
               "src/MultiKilo/ThirdParty/EasyWindowsTerminalControl/EasyTerminalControl.cs"
