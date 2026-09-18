@@ -34,8 +34,12 @@ public sealed class ProjectSession
 
     public event EventHandler? StateChanged;
 
-    public async Task StartAsync(bool continueSession)
+    public async Task StartAsync(
+        bool continueSession,
+        Func<EasyTerminalControl, Task> prepareViewAsync)
     {
+        ArgumentNullException.ThrowIfNull(prepareViewAsync);
+
         if (IsLive)
         {
             return;
@@ -58,6 +62,11 @@ public sealed class ProjectSession
 
         try
         {
+            // The native HwndTerminal must exist before pwsh/kilo can emit any
+            // VT state. Otherwise startup sequences such as DECSET 2004
+            // (bracketed paste) or alternate-screen setup can be lost.
+            await prepareViewAsync(view);
+
             var factory = new JobAssigningProcessFactory(job);
             var lifetimeTask = Task.Run(() =>
                 term.Start(

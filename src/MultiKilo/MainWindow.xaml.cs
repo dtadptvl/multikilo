@@ -183,8 +183,9 @@ public partial class MainWindow : Window
             await session.TerminateAsync();
             oldView?.DisconnectConPTYTerm();
             DetachView(oldView);
-            await session.StartAsync(continueSession: true);
-            AttachView(session.View);
+            await session.StartAsync(
+                continueSession: true,
+                prepareViewAsync: PrepareTerminalViewAsync);
             ShowSelectedTerminal();
         }
         catch (Exception ex)
@@ -290,11 +291,12 @@ public partial class MainWindow : Window
         try
         {
             SetActionButtonsEnabled(false);
+            ProjectsList.SelectedItem = project;
             oldView?.DisconnectConPTYTerm();
             DetachView(oldView);
-            await session.StartAsync(continueSession);
-            AttachView(session.View);
-            ProjectsList.SelectedItem = project;
+            await session.StartAsync(
+                continueSession,
+                prepareViewAsync: PrepareTerminalViewAsync);
             ShowSelectedTerminal();
             await Dispatcher.InvokeAsync(() => session.View?.Focus(), DispatcherPriority.Input);
         }
@@ -306,6 +308,39 @@ public partial class MainWindow : Window
         {
             RefreshSelectedProjectUi();
         }
+    }
+
+    private async Task PrepareTerminalViewAsync(
+        EasyWindowsTerminalControl.EasyTerminalControl view)
+    {
+        AttachView(view);
+        ShowSelectedTerminal();
+
+        if (view.IsLoaded)
+        {
+            return;
+        }
+
+        var loaded = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        RoutedEventHandler? handler = null;
+        handler = (_, _) => loaded.TrySetResult();
+
+        view.Loaded += handler;
+        try
+        {
+            await loaded.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            view.Loaded -= handler;
+        }
+
+        // Let HwndHost finish BuildWindowCore/registration before the child
+        // process is allowed to emit terminal state.
+        await Dispatcher.InvokeAsync(
+            () => { },
+            DispatcherPriority.Loaded);
     }
 
     private ProjectSession GetSession(ProjectDefinition project)
