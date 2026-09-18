@@ -3,7 +3,6 @@ using System.Text;
 using System.Threading.Channels;
 using EasyWindowsTerminalControl.Internals;
 using Microsoft.Terminal.Wpf;
-using Windows.Win32;
 
 namespace MultiKilo.Terminal;
 
@@ -13,6 +12,7 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
     private const string BracketedPasteSuffix = "\x1b[201~";
     private const string BracketedModePrefix = "\x1b[?2004";
     private const string Win32InputMode = "\x1b[?9001h";
+    private const nuint ProcThreadAttributePseudoConsole = 0x00020016;
 
     private readonly string _command;
     private readonly string _workingDirectory;
@@ -215,7 +215,7 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
             var factory = new JobAssigningProcessFactory(_job);
             process = factory.Start(
                 _command,
-                PInvoke.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                ProcThreadAttributePseudoConsole,
                 pseudoConsole,
                 _workingDirectory);
 

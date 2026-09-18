@@ -18,8 +18,8 @@ internal sealed class TerminalSessionView : Grid
         {
             AutoResize = true,
             Focusable = true,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
+            VerticalAlignment = System.Windows.VerticalAlignment.Stretch
         };
 
         KeyboardNavigation.SetTabNavigation(this, KeyboardNavigationMode.Contained);
