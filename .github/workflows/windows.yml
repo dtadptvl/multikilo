@@ -27,8 +27,12 @@ jobs:
         run: |
           $exe = ".\src\MultiKilo\bin\x64\Release\net8.0-windows10.0.19041.0\win-x64\MultiKilo.exe"
           if (-not (Test-Path $exe)) { throw "Built MultiKilo.exe not found at $exe" }
-          & $exe --smoke-test
-          if ($LASTEXITCODE -ne 0) { throw "Smoke test failed with exit code $LASTEXITCODE" }
+          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -PassThru
+          if (-not $process.WaitForExit(30000)) {
+            $process.Kill($true)
+            throw "Smoke test timed out after 30 seconds"
+          }
+          if ($process.ExitCode -ne 0) { throw "Smoke test failed with exit code $($process.ExitCode)" }
 
       - name: Publish portable x64 folder
         shell: pwsh
