@@ -548,7 +548,12 @@ public:
     {
         Close();
 
-        _module = LoadLibraryW(L"TerminalConnection.dll");
+        // ConptyConnection::final_release deliberately destroys the object on
+        // a background thread. Keep the component loaded for the process
+        // lifetime so that deferred final_release code can never execute from
+        // an unloaded DLL.
+        static const HMODULE terminalConnectionModule = LoadLibraryW(L"TerminalConnection.dll");
+        _module = terminalConnectionModule;
         if (!_module)
         {
             return HRESULT_FROM_WIN32(GetLastError());
@@ -640,11 +645,8 @@ public:
         _isRunning = nullptr;
         _destroy = nullptr;
 
-        if (_module)
-        {
-            FreeLibrary(_module);
-            _module = nullptr;
-        }
+        // TerminalConnection.dll is intentionally process-lifetime.
+        _module = nullptr;
     }
 
 private:
