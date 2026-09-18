@@ -68,6 +68,19 @@ internal static class TerminalSmokeTest
             terminal.SetTheme(CreateTheme(), "Cascadia Mono", 13);
             terminal.Connection = connection;
 
+            NativeMethods.TerminalSendCharEvent(
+                terminal.NativeTerminalForTesting,
+                'k',
+                0,
+                0);
+            var keyboardProbe = await connection.ReadInputAsync(TimeSpan.FromSeconds(2));
+            if (keyboardProbe != "k")
+            {
+                return Fail(
+                    41,
+                    $"Native printable keyboard input mismatch. Received={keyboardProbe.Replace("\x1b", "<ESC>")}.");
+            }
+
             connection.EmitOutput("\x1b[?2004h");
             await Task.Delay(100);
 
@@ -229,11 +242,20 @@ internal static class TerminalSmokeTest
                         0);
                 }
 
-                NativeMethods.TerminalSendCharEvent(
+                const ushort VkReturn = 0x0D;
+                const ushort ReturnScanCode = 0x1C;
+                NativeMethods.TerminalSendKeyEvent(
                     sessions[0].Terminal.NativeTerminalForTesting,
-                    '\r',
+                    VkReturn,
+                    ReturnScanCode,
                     0,
-                    0);
+                    true);
+                NativeMethods.TerminalSendKeyEvent(
+                    sessions[0].Terminal.NativeTerminalForTesting,
+                    VkReturn,
+                    ReturnScanCode,
+                    0,
+                    false);
             });
 
             if (!await WaitForConditionAsync(
