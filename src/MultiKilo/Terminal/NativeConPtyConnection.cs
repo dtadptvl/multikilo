@@ -359,6 +359,12 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
                 var bytes = EncodeInput(item);
                 var started = item.IsNativePaste ? Environment.TickCount64 : 0;
 
+                if (item.IsNativePaste)
+                {
+                    Interlocked.Exchange(ref _lastNativePasteBytes, bytes.LongLength);
+                    Volatile.Write(ref _lastNativePasteBracketed, item.Bracketed ? 1 : 0);
+                }
+
                 stream.Write(bytes, 0, bytes.Length);
                 stream.Flush();
 
@@ -417,14 +423,6 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
 
     private void QueueInput(InputWorkItem item)
     {
-        if (item.IsNativePaste)
-        {
-            var filteredByteCount = Encoding.UTF8.GetByteCount(FilterStringForPaste(item.Text));
-            var totalByteCount = filteredByteCount + (item.Bracketed ? 12 : 0);
-            Interlocked.Exchange(ref _lastNativePasteBytes, totalByteCount);
-            Volatile.Write(ref _lastNativePasteBracketed, item.Bracketed ? 1 : 0);
-        }
-
         if (!_inputQueue.Writer.TryWrite(item))
         {
             throw new InvalidOperationException("Terminal input queue is closed.");
