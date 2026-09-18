@@ -58,10 +58,7 @@ public sealed class ProjectSession
 
             var kilo = continueSession ? "kilo --auto --continue" : "kilo --auto";
             var commandLine = $"pwsh.exe -NoLogo -NoProfile -Command \"{kilo}; exit\"";
-            view.StartSession(
-                commandLine,
-                Project.Folder,
-                bracketedPasteSupported: true);
+            view.StartSession(commandLine, Project.Folder);
 
             if (generation != _generation)
             {
