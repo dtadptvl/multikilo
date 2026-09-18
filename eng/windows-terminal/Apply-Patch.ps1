@@ -654,16 +654,15 @@ $termClassNew = $termClassOld + [Environment]::NewLine + [Environment]::NewLine 
 Replace-Once $cpp $termClassOld $termClassNew
 
 $teardownOld = @'
+void HwndTerminal::Teardown() noexcept
 try
 {
-    // As a rule, detach resources from the Terminal before shutting them down.
 '@
 $teardownNew = @'
+void HwndTerminal::Teardown() noexcept
 try
 {
     _nativeSession.reset();
-
-    // As a rule, detach resources from the Terminal before shutting them down.
 '@
 Replace-Once $cpp $teardownOld $teardownNew
 
