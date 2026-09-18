@@ -34,6 +34,25 @@ namespace Microsoft.Terminal.Wpf
                 ctrl,
                 shift);
 
+        internal event Action<uint> NativeSessionExited
+        {
+            add => this.termContainer.NativeSessionExited += value;
+            remove => this.termContainer.NativeSessionExited -= value;
+        }
+
+        internal event Action<string> NativeSessionOutput
+        {
+            add => this.termContainer.NativeSessionOutput += value;
+            remove => this.termContainer.NativeSessionOutput -= value;
+        }
+
+        internal void StartNativeSession(string commandLine, string workingDirectory) =>
+            this.termContainer.StartNativeSession(commandLine, workingDirectory);
+
+        internal void TerminateNativeSession() => this.termContainer.TerminateNativeSession();
+
+        internal bool NativeSessionIsRunning => this.termContainer.NativeSessionIsRunning;
+
         /// <summary>
         /// Initializes a new instance of the <see cref="TerminalControl"/> class.
         /// </summary>
