@@ -427,8 +427,5 @@ namespace Microsoft.Terminal.Wpf
         {
             this.SessionOutputForTesting?.Invoke(data);
         }
-
-    }
-}
     }
 }
