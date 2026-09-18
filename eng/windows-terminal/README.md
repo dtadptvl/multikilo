@@ -16,4 +16,4 @@ The native patch is intentionally narrow:
 - paste filtering uses the same `FilterStringForPaste` path as full Windows Terminal;
 - small flat C exports expose copy/paste and clipboard-format queries to the pinned WPF host.
 
-The WPF host is also pinned to the same upstream revision. Keyboard, TSF/IME, selection, mouse behavior, renderer state and VT parsing remain owned by Windows Terminal components.
+The WPF host is also pinned to the same upstream revision. Keyboard, TSF/IME, selection, mouse behavior, renderer state and VT parsing remain owned by Windows Terminal components. MultiKilo intentionally keeps DECSET 9001 (Win32 input mode) disabled so keyboard input uses the normal VT path expected by Kilo.

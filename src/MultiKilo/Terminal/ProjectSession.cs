@@ -239,7 +239,7 @@ public sealed class ProjectSession
             ConPTYTerm = term,
             StartupCommandLine = PwshCommand,
             WorkingDirectory = workingDirectory,
-            Win32InputMode = true,
+            Win32InputMode = false,
             InputCapture = EasyTerminalControl.INPUT_CAPTURE.TabKey |
                            EasyTerminalControl.INPUT_CAPTURE.DirectionKeys,
             FontFamilyWhenSettingTheme = new System.Windows.Media.FontFamily("Cascadia Mono"),

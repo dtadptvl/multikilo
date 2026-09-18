@@ -258,7 +258,7 @@ namespace EasyWindowsTerminalControl {
 		public static readonly DependencyProperty WorkingDirectoryProperty = DependencyProperty.Register(nameof(WorkingDirectory), typeof(string), typeof(EasyTerminalControl), new PropertyMetadata(null));
 
 		public static readonly DependencyProperty LogConPTYOutputProperty = DependencyProperty.Register(nameof(LogConPTYOutput), typeof(bool), typeof(EasyTerminalControl), new PropertyMetadata(false));
-		public static readonly DependencyProperty Win32InputModeProperty = DependencyProperty.Register(nameof(Win32InputMode), typeof(bool), typeof(EasyTerminalControl), new PropertyMetadata(true));
+		public static readonly DependencyProperty Win32InputModeProperty = DependencyProperty.Register(nameof(Win32InputMode), typeof(bool), typeof(EasyTerminalControl), new PropertyMetadata(false));
 		public static readonly DependencyProperty IsReadOnlyProperty = PropHelper.GenerateWriteOnlyProperty((c) => c.IsReadOnly);
 		public static readonly DependencyProperty IsCursorVisibleProperty = PropHelper.GenerateWriteOnlyProperty((c) => c.IsCursorVisible);
 

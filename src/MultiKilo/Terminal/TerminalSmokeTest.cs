@@ -196,7 +196,7 @@ internal static class TerminalSmokeTest
             {
                 await session.StartAsync();
                 session.Terminal.Connection = session.Term;
-                session.Term.Win32DirectInputMode(true);
+                session.Term.Win32DirectInputMode(false);
 
                 if (session.Terminal.Columns > 0 && session.Terminal.Rows > 0)
                 {
@@ -229,7 +229,7 @@ internal static class TerminalSmokeTest
                     () => sessions[0].ContainsOutput("MULTIKILO_KEYBOARD_OK"),
                     TimeSpan.FromSeconds(8)))
             {
-                return Fail(36, "TerminalCore -> Win32 input mode -> ConPTY keyboard path failed.");
+                return Fail(36, "TerminalCore -> standard VT input -> ConPTY keyboard path failed.");
             }
 
             for (var i = 0; i < sessions.Count; i++)
