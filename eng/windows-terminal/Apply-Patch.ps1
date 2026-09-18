@@ -83,19 +83,19 @@ try
     auto filtered = FilterStringForPaste(clipboardText, CarriageReturnNewline | ControlCodes);
 
     bool bracketedPaste = false;
-    bool alternateScreen = false;
     if (_terminal)
     {
         const auto lock = _terminal->LockForReading();
         bracketedPaste = _terminal->IsXtermBracketedPasteModeEnabled();
-        alternateScreen = _terminal->IsInAlternateBuffer();
     }
 
-    // ConPTY owns the application's bracketed-paste state internally. The
-    // lower-level WPF HwndTerminal does not always observe DECSET 2004 from
-    // Kilo/OpenTUI even though the TUI has enabled it. Kilo always supports
-    // bracketed paste while its alternate-screen UI is active.
-    bracketedPaste = bracketedPaste || (_bracketedPasteSupported && alternateScreen);
+    // A real ConPTY consumes application terminal modes (including DECSET
+    // 2004/1049) inside conhost and emits rendered VT output to the frontend.
+    // The low-level WPF HwndTerminal therefore cannot reliably observe Kilo's
+    // bracketed-paste state. MultiKilo explicitly launches Kilo/OpenTUI, which
+    // supports bracketed paste for the lifetime of its session, so use the
+    // declared session capability as the authoritative fallback.
+    bracketedPaste = bracketedPaste || _bracketedPasteSupported;
 
     if (bracketedPaste)
     {
@@ -977,28 +977,3 @@ $defNew = @'
 Replace-Once $def $defOld $defNew
 
 Write-Host "Applied MultiKilo native ConPTY session backend."
-
-# Expose active alternate-screen state to the native paste policy.
-$terminalCoreHpp = "src\cascadia\TerminalCore\Terminal.hpp"
-Replace-Once $terminalCoreHpp "    bool IsXtermBracketedPasteModeEnabled() const noexcept;" ("    bool IsXtermBracketedPasteModeEnabled() const noexcept;" + [Environment]::NewLine + "    bool IsInAlternateBuffer() const noexcept;")
-
-$terminalCoreCpp = "src\cascadia\TerminalCore\Terminal.cpp"
-$coreModeOld = @'
-bool Terminal::IsXtermBracketedPasteModeEnabled() const noexcept
-{
-    return _systemMode.test(Mode::BracketedPaste);
-}
-'@
-$coreModeNew = @'
-bool Terminal::IsXtermBracketedPasteModeEnabled() const noexcept
-{
-    return _systemMode.test(Mode::BracketedPaste);
-}
-
-bool Terminal::IsInAlternateBuffer() const noexcept
-{
-    return _inAltBuffer();
-}
-'@
-Replace-Once $terminalCoreCpp $coreModeOld $coreModeNew
-Write-Host "Applied Kilo alternate-screen bracketed-paste capability fallback."
