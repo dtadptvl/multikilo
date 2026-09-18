@@ -1,0 +1,48 @@
+name: windows
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test-publish:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore .\MultiKilo.sln
+
+      - name: Build
+        run: dotnet build .\MultiKilo.sln -c Release --no-restore
+
+      - name: ConPTY and terminal smoke test
+        shell: pwsh
+        run: |
+          dotnet run --project .\src\MultiKilo\MultiKilo.csproj -c Release --no-build -- --smoke-test
+          if ($LASTEXITCODE -ne 0) { throw "Smoke test failed with exit code $LASTEXITCODE" }
+
+      - name: Publish portable x64 folder
+        shell: pwsh
+        run: .\build.ps1
+
+      - name: Inspect output
+        shell: pwsh
+        run: |
+          $exe = ".\dist\MultiKilo-win-x64\MultiKilo.exe"
+          if (-not (Test-Path $exe)) { throw "MultiKilo.exe was not published." }
+          Get-ChildItem .\dist\MultiKilo-win-x64 -File | Sort-Object Name | Select-Object Name, Length | Format-Table -AutoSize
+          $bytes = (Get-ChildItem .\dist\MultiKilo-win-x64 -Recurse -File | Measure-Object Length -Sum).Sum
+          "Portable folder size: $([math]::Round($bytes / 1MB, 2)) MB"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MultiKilo-win-x64
+          path: dist/MultiKilo-win-x64/
+          if-no-files-found: error
