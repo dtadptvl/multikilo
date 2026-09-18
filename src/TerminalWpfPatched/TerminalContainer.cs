@@ -191,7 +191,7 @@ namespace Microsoft.Terminal.Wpf
             NativeMethods.TerminalResizeSession(this.terminal, (uint)dimensions.X, (uint)dimensions.Y);
         }
 
-        internal void StartSession(string commandLine, string workingDirectory, bool bracketedPasteSupported)
+        internal void StartSession(string commandLine, string workingDirectory)
         {
             var columns = (uint)Math.Max(1, this.Columns);
             var rows = (uint)Math.Max(1, this.Rows);
@@ -199,7 +199,6 @@ namespace Microsoft.Terminal.Wpf
                 this.terminal,
                 commandLine,
                 workingDirectory,
-                bracketedPasteSupported,
                 columns,
                 rows);
         }
