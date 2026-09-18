@@ -158,6 +158,7 @@ internal static class TerminalSmokeTest
             $hasWtProfile = -not [string]::IsNullOrWhiteSpace($env:WT_PROFILE_ID)
             [Console]::Write("MULTIKILO_WT_ENV:${hasWtSession}:${hasWtProfile}" + $crlf)
             [Console]::Write("$esc[?1049h")
+            [Console]::Write("$esc[?2004h")
             [Console]::Write("MULTIKILO_BRACKET_READY" + $crlf)
 
             $stream = [Console]::OpenStandardInput()
@@ -202,6 +203,7 @@ internal static class TerminalSmokeTest
 
             $crCount = @($bytes | Where-Object { $_ -eq 13 }).Count
             [Console]::Write("MULTIKILO_BRACKET_RESULT:${isBracketed}:${crCount}" + $crlf)
+            [Console]::Write("$esc[?2004l")
             [Console]::Write("$esc[?1049l")
             """,
             new UTF8Encoding(false));
