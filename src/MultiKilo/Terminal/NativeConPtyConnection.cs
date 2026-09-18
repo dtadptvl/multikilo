@@ -18,7 +18,7 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
     private readonly string _workingDirectory;
     private readonly JobObject _job;
     private readonly bool _captureOutput;
-    private readonly Channel<byte[]> _inputQueue = Channel.CreateUnbounded<byte[]>(
+    private readonly Channel<InputWorkItem> _inputQueue = Channel.CreateUnbounded<InputWorkItem>(
         new UnboundedChannelOptions
         {
             SingleReader = true,
@@ -55,6 +55,13 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
     private int _lastNativePasteBracketed;
     private int _pendingColumns = 120;
     private int _pendingRows = 32;
+    private long _lastNativePasteWriteMilliseconds;
+    private long _lastNativePasteWrittenBytes;
+
+    private readonly record struct InputWorkItem(
+        string Text,
+        bool IsNativePaste,
+        bool Bracketed);
 
     public NativeConPtyConnection(
         string command,
@@ -77,6 +84,8 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
     internal bool BracketedPasteEnabled => _bracketedPasteEnabled;
     internal long LastNativePasteBytes => Interlocked.Read(ref _lastNativePasteBytes);
     internal bool LastNativePasteWasBracketed => Volatile.Read(ref _lastNativePasteBracketed) != 0;
+    internal long LastNativePasteWriteMilliseconds => Interlocked.Read(ref _lastNativePasteWriteMilliseconds);
+    internal long LastNativePasteWrittenBytes => Interlocked.Read(ref _lastNativePasteWrittenBytes);
 
     public Task StartProcessAsync()
     {
@@ -108,20 +117,18 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
             return;
         }
 
-        if (Volatile.Read(ref _nativePasteDepth) > 0)
-        {
-            QueueNativePaste(data);
-            return;
-        }
-
-        QueueUtf8(data);
+        var isNativePaste = Volatile.Read(ref _nativePasteDepth) > 0;
+        QueueInput(new InputWorkItem(
+            data,
+            IsNativePaste: isNativePaste,
+            Bracketed: isNativePaste && _bracketedPasteEnabled));
     }
 
     public void WriteRawInput(string data)
     {
         if (!string.IsNullOrEmpty(data) && !_disposed)
         {
-            QueueUtf8(data);
+            QueueInput(new InputWorkItem(data, IsNativePaste: false, Bracketed: false));
         }
     }
 
@@ -347,10 +354,21 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
                 return;
             }
 
-            await foreach (var bytes in _inputQueue.Reader.ReadAllAsync().ConfigureAwait(false))
+            await foreach (var item in _inputQueue.Reader.ReadAllAsync().ConfigureAwait(false))
             {
+                var bytes = EncodeInput(item);
+                var started = item.IsNativePaste ? Environment.TickCount64 : 0;
+
                 stream.Write(bytes, 0, bytes.Length);
                 stream.Flush();
+
+                if (item.IsNativePaste)
+                {
+                    Interlocked.Exchange(ref _lastNativePasteWrittenBytes, bytes.LongLength);
+                    Interlocked.Exchange(
+                        ref _lastNativePasteWriteMilliseconds,
+                        Environment.TickCount64 - started);
+                }
             }
         }
         catch (ObjectDisposedException)
@@ -368,38 +386,46 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
         }
     }
 
-    private void QueueNativePaste(string data)
+    private static byte[] EncodeInput(InputWorkItem item)
     {
-        var filtered = FilterStringForPaste(data);
-        var bracketed = _bracketedPasteEnabled;
-
-        byte[] bytes;
-        if (bracketed)
+        if (!item.IsNativePaste)
         {
-            var prefix = Encoding.ASCII.GetBytes(BracketedPastePrefix);
-            var suffix = Encoding.ASCII.GetBytes(BracketedPasteSuffix);
-            var contentByteCount = Encoding.UTF8.GetByteCount(filtered);
-            bytes = GC.AllocateUninitializedArray<byte>(prefix.Length + contentByteCount + suffix.Length);
-
-            prefix.CopyTo(bytes, 0);
-            Encoding.UTF8.GetBytes(filtered.AsSpan(), bytes.AsSpan(prefix.Length, contentByteCount));
-            suffix.CopyTo(bytes, prefix.Length + contentByteCount);
-        }
-        else
-        {
-            bytes = Encoding.UTF8.GetBytes(filtered);
+            return Encoding.UTF8.GetBytes(item.Text);
         }
 
-        Interlocked.Exchange(ref _lastNativePasteBytes, bytes.LongLength);
-        Volatile.Write(ref _lastNativePasteBracketed, bracketed ? 1 : 0);
-        QueueBytes(bytes);
+        var filtered = FilterStringForPaste(item.Text);
+
+        if (!item.Bracketed)
+        {
+            return Encoding.UTF8.GetBytes(filtered);
+        }
+
+        var prefix = Encoding.ASCII.GetBytes(BracketedPastePrefix);
+        var suffix = Encoding.ASCII.GetBytes(BracketedPasteSuffix);
+        var contentByteCount = Encoding.UTF8.GetByteCount(filtered);
+        var bytes = GC.AllocateUninitializedArray<byte>(
+            prefix.Length + contentByteCount + suffix.Length);
+
+        prefix.CopyTo(bytes, 0);
+        Encoding.UTF8.GetBytes(
+            filtered.AsSpan(),
+            bytes.AsSpan(prefix.Length, contentByteCount));
+        suffix.CopyTo(bytes, prefix.Length + contentByteCount);
+
+        return bytes;
     }
 
-    private void QueueUtf8(string data) => QueueBytes(Encoding.UTF8.GetBytes(data));
-
-    private void QueueBytes(byte[] bytes)
+    private void QueueInput(InputWorkItem item)
     {
-        if (!_inputQueue.Writer.TryWrite(bytes))
+        if (item.IsNativePaste)
+        {
+            var filteredByteCount = Encoding.UTF8.GetByteCount(FilterStringForPaste(item.Text));
+            var totalByteCount = filteredByteCount + (item.Bracketed ? 12 : 0);
+            Interlocked.Exchange(ref _lastNativePasteBytes, totalByteCount);
+            Volatile.Write(ref _lastNativePasteBracketed, item.Bracketed ? 1 : 0);
+        }
+
+        if (!_inputQueue.Writer.TryWrite(item))
         {
             throw new InvalidOperationException("Terminal input queue is closed.");
         }
