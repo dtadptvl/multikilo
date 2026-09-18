@@ -340,59 +340,92 @@ namespace Microsoft.Terminal.Wpf
             NativeMethods.SetFocus(this.hwnd);
         }
 
+        private enum ClipboardShortcutAction
+        {
+            PassThrough,
+            Suppress,
+            Copy,
+            Paste,
+        }
+
         private bool TryHandleClipboardShortcut(ushort vkey)
         {
             const int VkControl = 0x11;
             const int VkShift = 0x10;
+
+            var ctrl = (NativeMethods.GetKeyState(VkControl) & 0x8000) != 0;
+            var shift = (NativeMethods.GetKeyState(VkShift) & 0x8000) != 0;
+            var action = this.ClassifyClipboardShortcut(vkey, ctrl, shift);
+
+            switch (action)
+            {
+                case ClipboardShortcutAction.Copy:
+                    NativeMethods.TerminalCopySelectionToClipboard(this.terminal);
+                    this.suppressedShortcutKeys.Add(vkey);
+                    return true;
+
+                case ClipboardShortcutAction.Paste:
+                    this.PasteFromClipboardAsync();
+                    this.suppressedShortcutKeys.Add(vkey);
+                    return true;
+
+                case ClipboardShortcutAction.Suppress:
+                    this.suppressedShortcutKeys.Add(vkey);
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        private ClipboardShortcutAction ClassifyClipboardShortcut(
+            ushort vkey,
+            bool ctrl,
+            bool shift)
+        {
             const ushort VkInsert = 0x2D;
             const ushort VkC = 0x43;
             const ushort VkV = 0x56;
 
-            var ctrl = (NativeMethods.GetKeyState(VkControl) & 0x8000) != 0;
-            var shift = (NativeMethods.GetKeyState(VkShift) & 0x8000) != 0;
-
-            var copy = (ctrl && shift && vkey == VkC) ||
-                       (ctrl && !shift && vkey == VkInsert);
-            if (copy)
+            if ((ctrl && shift && vkey == VkC) ||
+                (ctrl && !shift && vkey == VkInsert))
             {
-                NativeMethods.TerminalCopySelectionToClipboard(this.terminal);
-                this.suppressedShortcutKeys.Add(vkey);
-                return true;
+                return ClipboardShortcutAction.Copy;
             }
 
-            var explicitPaste = (ctrl && shift && vkey == VkV) ||
-                                (!ctrl && shift && vkey == VkInsert);
-            if (explicitPaste)
+            if ((ctrl && shift && vkey == VkV) ||
+                (!ctrl && shift && vkey == VkInsert))
             {
-                if (NativeMethods.TerminalClipboardContainsText())
-                {
-                    this.PasteFromClipboardAsync();
-                }
-
-                this.suppressedShortcutKeys.Add(vkey);
-                return true;
+                return NativeMethods.TerminalClipboardContainsText()
+                    ? ClipboardShortcutAction.Paste
+                    : ClipboardShortcutAction.Suppress;
             }
 
             if (ctrl && !shift && vkey == VkV)
             {
-                // Image clipboard input belongs to Kilo. Do not turn Ctrl+V
-                // into terminal text paste when an image format is present.
+                // Kilo owns Ctrl+V when the clipboard carries an image. This
+                // preserves Kilo's native image-paste behavior.
                 if (NativeMethods.TerminalClipboardContainsImage())
                 {
-                    return false;
+                    return ClipboardShortcutAction.PassThrough;
                 }
 
                 if (NativeMethods.TerminalClipboardContainsText())
                 {
-                    this.PasteFromClipboardAsync();
-                    this.suppressedShortcutKeys.Add(vkey);
-                    return true;
+                    return ClipboardShortcutAction.Paste;
                 }
             }
 
             // Ctrl+C without Shift remains application input (interrupt/cancel).
-            return false;
+            return ClipboardShortcutAction.PassThrough;
         }
+
+        internal bool ClipboardShortcutPassesThroughForTesting(
+            ushort vkey,
+            bool ctrl,
+            bool shift) =>
+            this.ClassifyClipboardShortcut(vkey, ctrl, shift) ==
+            ClipboardShortcutAction.PassThrough;
 
         private bool ShouldSuppressClipboardShortcutChar(char character)
         {

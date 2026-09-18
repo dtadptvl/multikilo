@@ -25,6 +25,14 @@ namespace Microsoft.Terminal.Wpf
         internal IntPtr NativeHwndForTesting => this.termContainer.NativeHwndForTesting;
         internal double ScrollValueForTesting => this.scrollbar.Value;
         internal double ScrollMaximumForTesting => this.scrollbar.Maximum;
+        internal bool ClipboardShortcutPassesThroughForTesting(
+            ushort vkey,
+            bool ctrl,
+            bool shift) =>
+            this.termContainer.ClipboardShortcutPassesThroughForTesting(
+                vkey,
+                ctrl,
+                shift);
 
         /// <summary>
         /// Initializes a new instance of the <see cref="TerminalControl"/> class.

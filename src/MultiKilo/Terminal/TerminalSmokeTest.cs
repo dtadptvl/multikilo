@@ -73,6 +73,11 @@ internal static class TerminalSmokeTest
             var payload = CreateLargePastePayload();
             System.Windows.Clipboard.SetText(payload);
 
+            if (terminal.ClipboardShortcutPassesThroughForTesting(0x56, ctrl: true, shift: false))
+            {
+                return Fail(29, "Ctrl+V text clipboard incorrectly passed through to Kilo.");
+            }
+
             var pasteTask = Task.Run(
                 () => NativeMethods.TerminalPasteFromClipboard(terminal.NativeTerminalForTesting));
 
@@ -114,6 +119,11 @@ internal static class TerminalSmokeTest
             if (!NativeMethods.TerminalClipboardContainsImage())
             {
                 return Fail(33, "Native clipboard image detection failed.");
+            }
+
+            if (!terminal.ClipboardShortcutPassesThroughForTesting(0x56, ctrl: true, shift: false))
+            {
+                return Fail(40, "Ctrl+V image clipboard was swallowed by the terminal instead of passing through to Kilo.");
             }
 
             var scrollText = new StringBuilder();
