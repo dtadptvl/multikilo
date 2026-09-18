@@ -18,6 +18,8 @@ function Write-Normalized([string]$RelativePath, [string]$Text) {
 
 function Replace-Once([string]$RelativePath, [string]$OldText, [string]$NewText) {
     $text = Read-Normalized $RelativePath
+    $OldText = $OldText.Replace([string][char]13 + [char]10, [string][char]10)
+    $NewText = $NewText.Replace([string][char]13 + [char]10, [string][char]10)
     $index = $text.IndexOf($OldText, [System.StringComparison]::Ordinal)
     if ($index -lt 0) {
         throw "Pinned-source patch anchor not found in $RelativePath : $OldText"
