@@ -6,6 +6,9 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using WpfColor = System.Windows.Media.Color;
+using WpfFontFamily = System.Windows.Media.FontFamily;
+using WpfUserControl = System.Windows.Controls.UserControl;
 #else
 using System.Drawing;
 using Microsoft.UI.Xaml;
@@ -19,13 +22,13 @@ using Microsoft.Terminal.Wpf;
 
 
 namespace EasyWindowsTerminalControl {
-	public class EasyTerminalControl : UserControl {
+	public class EasyTerminalControl : WpfUserControl {
 		/// <summary>
 		/// Converts Color to COLOREF, note that COLOREF does not support alpha channels so it is ignored
 		/// </summary>
 		/// <param name="color"></param>
 		/// <returns></returns>
-		public static uint ColorToVal(Color color) => BitConverter.ToUInt32(new byte[] { color.R, color.G, color.B, 0 }, 0);
+		public static uint ColorToVal(WpfColor color) => BitConverter.ToUInt32(new byte[] { color.R, color.G, color.B, 0 }, 0);
 		public EasyTerminalControl() {
 			InitializeComponent();
 			SetKBCaptureOptions();
@@ -149,8 +152,8 @@ namespace EasyWindowsTerminalControl {
 			set => SetValue(Win32InputModeProperty, value);
 		}
 
-		public FontFamily FontFamilyWhenSettingTheme {
-			get => (FontFamily)GetValue(FontFamilyWhenSettingThemeProperty);
+		public WpfFontFamily FontFamilyWhenSettingTheme {
+			get => (WpfFontFamily)GetValue(FontFamilyWhenSettingThemeProperty);
 			set => SetValue(FontFamilyWhenSettingThemeProperty, value);
 		}
 
@@ -262,7 +265,7 @@ namespace EasyWindowsTerminalControl {
 		public static readonly DependencyProperty IsReadOnlyProperty = PropHelper.GenerateWriteOnlyProperty((c) => c.IsReadOnly);
 		public static readonly DependencyProperty IsCursorVisibleProperty = PropHelper.GenerateWriteOnlyProperty((c) => c.IsCursorVisible);
 
-		public static readonly DependencyProperty FontFamilyWhenSettingThemeProperty = DependencyProperty.Register(nameof(FontFamilyWhenSettingTheme), typeof(FontFamily), typeof(EasyTerminalControl), new PropertyMetadata(new FontFamily("Cascadia Code")));
+		public static readonly DependencyProperty FontFamilyWhenSettingThemeProperty = DependencyProperty.Register(nameof(FontFamilyWhenSettingTheme), typeof(FontFamily), typeof(EasyTerminalControl), new PropertyMetadata(new WpfFontFamily("Cascadia Code")));
 
 		public static readonly DependencyProperty FontSizeWhenSettingThemeProperty = DependencyProperty.Register(nameof(FontSizeWhenSettingTheme), typeof(int), typeof(EasyTerminalControl), new PropertyMetadata(12));
 

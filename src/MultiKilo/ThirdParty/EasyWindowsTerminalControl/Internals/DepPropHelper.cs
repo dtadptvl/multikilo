@@ -6,7 +6,7 @@ using System.Windows.Controls;
 
 namespace EasyWindowsTerminalControl.Internals {
 
-	internal class DepPropHelper<CONTROL_TYPE> where CONTROL_TYPE : UserControl {
+	internal class DepPropHelper<CONTROL_TYPE> where CONTROL_TYPE : System.Windows.Controls.UserControl {
 		protected DepPropHelper() => throw new Exception("Should not be instanced");
 		public static DependencyProperty GenerateWriteOnlyProperty<PROP_TYPE>(Expression<Func<CONTROL_TYPE, PROP_TYPE>> PropToSet) {
 
