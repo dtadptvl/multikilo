@@ -25,15 +25,6 @@ namespace Microsoft.Terminal.Wpf
         internal IntPtr NativeHwndForTesting => this.termContainer.NativeHwndForTesting;
         internal double ScrollValueForTesting => this.scrollbar.Value;
         internal double ScrollMaximumForTesting => this.scrollbar.Maximum;
-        internal bool ClipboardShortcutPassesThroughForTesting(
-            ushort vkey,
-            bool ctrl,
-            bool shift) =>
-            this.termContainer.ClipboardShortcutPassesThroughForTesting(
-                vkey,
-                ctrl,
-                shift);
-
         /// <summary>
         /// Raised when the native ConPTY session exits.
         /// </summary>
