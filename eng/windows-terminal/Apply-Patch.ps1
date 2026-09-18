@@ -6,75 +6,52 @@ param(
 $ErrorActionPreference = "Stop"
 $utf8 = [System.Text.UTF8Encoding]::new($false)
 
-function Replace-Exact([string]$RelativePath, [string]$OldText, [string]$NewText) {
+function Read-Normalized([string]$RelativePath) {
     $path = Join-Path $SourceRoot $RelativePath
-    $text = [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
-    if (-not $text.Contains($OldText)) {
-        throw "Pinned-source patch anchor not found in $RelativePath"
-    }
-    $text = $text.Replace($OldText, $NewText)
-    [System.IO.File]::WriteAllText($path, $text, $utf8)
+    return [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
 }
 
-$hppDeclOld = @'
-__declspec(dllexport) const wchar_t* _stdcall TerminalGetSelection(void* terminal);
-__declspec(dllexport) bool _stdcall TerminalIsSelectionActive(void* terminal);
-__declspec(dllexport) void _stdcall DestroyTerminal(void* terminal);
-'@
-$hppDeclNew = @'
-__declspec(dllexport) const wchar_t* _stdcall TerminalGetSelection(void* terminal);
-__declspec(dllexport) bool _stdcall TerminalIsSelectionActive(void* terminal);
-__declspec(dllexport) bool _stdcall TerminalCopySelectionToClipboard(void* terminal);
-__declspec(dllexport) void _stdcall TerminalPasteFromClipboard(void* terminal);
-__declspec(dllexport) bool _stdcall TerminalClipboardContainsText();
-__declspec(dllexport) bool _stdcall TerminalClipboardContainsImage();
-__declspec(dllexport) void _stdcall DestroyTerminal(void* terminal);
-'@
-Replace-Exact "src\cascadia\TerminalControl\HwndTerminal.hpp" $hppDeclOld $hppDeclNew
-
-$friendOld = @'
-    friend const wchar_t* _stdcall TerminalGetSelection(void* terminal);
-    friend bool _stdcall TerminalIsSelectionActive(void* terminal);
-    friend void _stdcall TerminalSendKeyEvent(void* terminal, WORD vkey, WORD scanCode, WORD flags, bool keyDown);
-'@
-$friendNew = @'
-    friend const wchar_t* _stdcall TerminalGetSelection(void* terminal);
-    friend bool _stdcall TerminalIsSelectionActive(void* terminal);
-    friend bool _stdcall TerminalCopySelectionToClipboard(void* terminal);
-    friend void _stdcall TerminalPasteFromClipboard(void* terminal);
-    friend void _stdcall TerminalSendKeyEvent(void* terminal, WORD vkey, WORD scanCode, WORD flags, bool keyDown);
-'@
-Replace-Exact "src\cascadia\TerminalControl\HwndTerminal.hpp" $friendOld $friendNew
-
-Replace-Exact "src\cascadia\TerminalControl\HwndTerminal.cpp" "#include <windowsx.h>" "#include <windowsx.h>`n#include `"../../types/inc/utils.hpp`""
-
-$pasteOld = @'
-void HwndTerminal::_PasteTextFromClipboard() noexcept
-{
-    // Get paste data from clipboard
-    if (!OpenClipboard(_hwnd.get()))
-    {
-        return;
-    }
-
-    auto ClipboardDataHandle = GetClipboardData(CF_UNICODETEXT);
-    if (ClipboardDataHandle == nullptr)
-    {
-        CloseClipboard();
-        return;
-    }
-
-    if (const auto pwstr = static_cast<PCWCH>(GlobalLock(ClipboardDataHandle)))
-    {
-        _WriteTextToConnection(pwstr);
-    }
-
-    GlobalUnlock(ClipboardDataHandle);
-
-    CloseClipboard();
+function Write-Normalized([string]$RelativePath, [string]$Text) {
+    $path = Join-Path $SourceRoot $RelativePath
+    [System.IO.File]::WriteAllText($path, $Text, $utf8)
 }
-'@
-$pasteNew = @'
+
+function Replace-Once([string]$RelativePath, [string]$OldText, [string]$NewText) {
+    $text = Read-Normalized $RelativePath
+    $index = $text.IndexOf($OldText, [System.StringComparison]::Ordinal)
+    if ($index -lt 0) {
+        throw "Pinned-source patch anchor not found in $RelativePath : $OldText"
+    }
+    if ($text.IndexOf($OldText, $index + $OldText.Length, [System.StringComparison]::Ordinal) -ge 0) {
+        throw "Pinned-source patch anchor was not unique in $RelativePath : $OldText"
+    }
+    $text = $text.Substring(0, $index) + $NewText + $text.Substring($index + $OldText.Length)
+    Write-Normalized $RelativePath $text
+}
+
+$hpp = "src\cascadia\TerminalControl\HwndTerminal.hpp"
+Replace-Once $hpp `
+    "__declspec(dllexport) bool _stdcall TerminalIsSelectionActive(void* terminal);" `
+    ("__declspec(dllexport) bool _stdcall TerminalIsSelectionActive(void* terminal);`n" +
+     "__declspec(dllexport) bool _stdcall TerminalCopySelectionToClipboard(void* terminal);`n" +
+     "__declspec(dllexport) void _stdcall TerminalPasteFromClipboard(void* terminal);`n" +
+     "__declspec(dllexport) bool _stdcall TerminalClipboardContainsText();`n" +
+     "__declspec(dllexport) bool _stdcall TerminalClipboardContainsImage();")
+
+Replace-Once $hpp `
+    "    friend bool _stdcall TerminalIsSelectionActive(void* terminal);" `
+    ("    friend bool _stdcall TerminalIsSelectionActive(void* terminal);`n" +
+     "    friend bool _stdcall TerminalCopySelectionToClipboard(void* terminal);`n" +
+     "    friend void _stdcall TerminalPasteFromClipboard(void* terminal);")
+
+$cpp = "src\cascadia\TerminalControl\HwndTerminal.cpp"
+Replace-Once $cpp `
+    "#include <windowsx.h>" `
+    "#include <windowsx.h>`n#include `"../../types/inc/utils.hpp`""
+
+$text = Read-Normalized $cpp
+$pastePattern = "(?s)void HwndTerminal::_PasteTextFromClipboard\(\) noexcept\n\{.*?\n\}\n\ntil::size HwndTerminal::GetFontSize"
+$pasteReplacement = @'
 void HwndTerminal::_PasteTextFromClipboard() noexcept
 try
 {
@@ -126,10 +103,17 @@ try
     }
 }
 CATCH_LOG()
-'@
-Replace-Exact "src\cascadia\TerminalControl\HwndTerminal.cpp" $pasteOld $pasteNew
 
-$exportAnchor = "// Returns the selected text in the terminal."
+til::size HwndTerminal::GetFontSize
+'@
+$regex = [System.Text.RegularExpressions.Regex]::new($pastePattern)
+$matches = $regex.Matches($text)
+if ($matches.Count -ne 1) {
+    throw "Expected exactly one _PasteTextFromClipboard function, found $($matches.Count)."
+}
+$text = $regex.Replace($text, $pasteReplacement, 1)
+Write-Normalized $cpp $text
+
 $exports = @'
 bool _stdcall TerminalCopySelectionToClipboard(void* terminal)
 try
@@ -195,22 +179,15 @@ bool _stdcall TerminalClipboardContainsImage()
 
 // Returns the selected text in the terminal.
 '@
-Replace-Exact "src\cascadia\TerminalControl\HwndTerminal.cpp" $exportAnchor $exports
+Replace-Once $cpp "// Returns the selected text in the terminal." $exports
 
-$defOld = @'
-  TerminalGetSelection
-  TerminalIsSelectionActive
-  TerminalRegisterScrollCallback
-'@
-$defNew = @'
-  TerminalGetSelection
-  TerminalIsSelectionActive
-  TerminalCopySelectionToClipboard
-  TerminalPasteFromClipboard
-  TerminalClipboardContainsText
-  TerminalClipboardContainsImage
-  TerminalRegisterScrollCallback
-'@
-Replace-Exact "src\cascadia\TerminalControl\dll\Microsoft.Terminal.Control.def" $defOld $defNew
+$def = "src\cascadia\TerminalControl\dll\Microsoft.Terminal.Control.def"
+Replace-Once $def `
+    "  TerminalIsSelectionActive" `
+    ("  TerminalIsSelectionActive`n" +
+     "  TerminalCopySelectionToClipboard`n" +
+     "  TerminalPasteFromClipboard`n" +
+     "  TerminalClipboardContainsText`n" +
+     "  TerminalClipboardContainsImage")
 
 Write-Host "Applied MultiKilo native terminal patch to pinned Windows Terminal source."
