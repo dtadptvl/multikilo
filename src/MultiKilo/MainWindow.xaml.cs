@@ -310,7 +310,7 @@ public partial class MainWindow : Window
     {
         foreach (UIElement child in TerminalHostGrid.Children)
         {
-            child.Visibility = Visibility.Collapsed;
+            child.Visibility = Visibility.Hidden;
         }
 
         var view = SelectedSession?.View;

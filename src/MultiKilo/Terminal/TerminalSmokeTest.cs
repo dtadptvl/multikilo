@@ -26,7 +26,7 @@ internal static class TerminalSmokeTest
             var host = new Grid { Width = 720, Height = 420, Background = Brushes.Black };
             foreach (var session in sessions)
             {
-                session.View.Visibility = Visibility.Collapsed;
+                session.View.Visibility = Visibility.Hidden;
                 host.Children.Add(session.View);
             }
 
@@ -46,7 +46,7 @@ internal static class TerminalSmokeTest
             {
                 foreach (UIElement child in host.Children)
                 {
-                    child.Visibility = Visibility.Collapsed;
+                    child.Visibility = Visibility.Hidden;
                 }
 
                 session.View.Visibility = Visibility.Visible;
