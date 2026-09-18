@@ -291,11 +291,19 @@ $disconnectOld = @'
 '@
 $disconnectNew = @'
         _transitionToState(exitCode == 0 || exitCode == STILL_ACTIVE ? ConnectionState::Closed : ConnectionState::Failed);
-        _indicateExitWithStatus(exitCode);
 
         if (const auto callback = _multiKiloExitCallback)
         {
+            // MultiKilo is a portable host and does not ship the Windows
+            // Terminal app's localized resource context. The stock
+            // _indicateExitWithStatus() path calls RS_/RS_fmt and fail-fasts
+            // in TerminalConnection.dll when used standalone. MultiKilo owns
+            // session-exit UI/lifecycle, so report only the exit code here.
             callback(_multiKiloExitContext, exitCode);
+        }
+        else
+        {
+            _indicateExitWithStatus(exitCode);
         }
     }
     CATCH_LOG()
