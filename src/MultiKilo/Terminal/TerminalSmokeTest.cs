@@ -235,7 +235,7 @@ internal static class TerminalSmokeTest
             for (var i = 0; i < sessions.Count; i++)
             {
                 sessions[i].Term.WriteToTerm(
-                    $"Write-Output 'MULTIKILO_SHELL_READY_{i + 1}'\r");
+                    $"Write-Output ('MULTIKILO_SHELL_'+'READY_{i + 1}')\r");
             }
 
             if (!await WaitForConditionAsync(
@@ -248,9 +248,9 @@ internal static class TerminalSmokeTest
                 return Fail(42, "PowerShell sessions did not become command-ready.");
             }
 
-            const string keyboardExecutedMarker = "MULTIKILO_KEYBOARD_EXECUTED";
-            var keyboardCommand =
-                "Write-Output ([string]::Concat('MULTIKILO_KEYBOARD_','EXECUTED'))";
+            const string keyboardExecutedMarker = "multikilokeyboardexecuted";
+            const string keyboardCommand =
+                "echo multikilokeyboardexecuted";
             await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 foreach (var ch in keyboardCommand)
@@ -290,7 +290,12 @@ internal static class TerminalSmokeTest
                     () => sessions[0].ContainsOutput(keyboardExecutedMarker),
                     TimeSpan.FromSeconds(8)))
             {
-                return Fail(36, "TerminalCore -> standard VT input -> ConPTY keyboard path failed.");
+                return Fail(
+                    36,
+                    "TerminalCore -> standard VT input -> ConPTY keyboard path failed. " +
+                    $"Enqueued={EscapeDiagnostic(sessions[0].GetEnqueuedInput())} " +
+                    $"Written={EscapeDiagnostic(sessions[0].GetWrittenInput())} " +
+                    $"OutputTail={EscapeDiagnostic(sessions[0].GetOutputTail())}");
             }
 
             for (var i = 0; i < sessions.Count; i++)
@@ -418,6 +423,11 @@ internal static class TerminalSmokeTest
         return false;
     }
 
+    private static string EscapeDiagnostic(string value) =>
+        value.Replace("\x1b", "<ESC>")
+             .Replace("\r", "<CR>")
+             .Replace("\n", "<LF>");
+
     private static int Fail(int code, string details)
     {
         WriteFailure(details);
@@ -479,7 +489,10 @@ internal static class TerminalSmokeTest
     private sealed class SmokeSession
     {
         private readonly object _outputGate = new();
+        private readonly object _inputGate = new();
         private readonly StringBuilder _output = new();
+        private readonly StringBuilder _enqueuedInput = new();
+        private readonly StringBuilder _writtenInput = new();
         private Task? _lifetime;
 
         public SmokeSession(TerminalControl terminal)
@@ -492,6 +505,20 @@ internal static class TerminalSmokeTest
                 lock (_outputGate)
                 {
                     _output.Append(e.Data);
+                }
+            };
+            Term.InputEnqueuedForTesting += data =>
+            {
+                lock (_inputGate)
+                {
+                    _enqueuedInput.Append(data);
+                }
+            };
+            Term.InputWrittenForTesting += data =>
+            {
+                lock (_inputGate)
+                {
+                    _writtenInput.Append(data);
                 }
             };
         }
@@ -550,6 +577,33 @@ internal static class TerminalSmokeTest
             lock (_outputGate)
             {
                 return _output.ToString().Contains(value, StringComparison.Ordinal);
+            }
+        }
+
+        public string GetEnqueuedInput()
+        {
+            lock (_inputGate)
+            {
+                return _enqueuedInput.ToString();
+            }
+        }
+
+        public string GetWrittenInput()
+        {
+            lock (_inputGate)
+            {
+                return _writtenInput.ToString();
+            }
+        }
+
+        public string GetOutputTail()
+        {
+            lock (_outputGate)
+            {
+                const int maxChars = 1200;
+                return _output.Length <= maxChars
+                    ? _output.ToString()
+                    : _output.ToString(_output.Length - maxChars, maxChars);
             }
         }
 

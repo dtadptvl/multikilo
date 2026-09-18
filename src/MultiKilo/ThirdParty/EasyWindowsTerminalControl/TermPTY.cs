@@ -57,6 +57,8 @@ namespace EasyWindowsTerminalControl {
 		/// </summary>
 		public event EventHandler TermReady;
 		public event EventHandler<TerminalOutputEventArgs> TerminalOutput;//how we send data to the UI terminal
+		internal event Action<string> InputEnqueuedForTesting;
+		internal event Action<string> InputWrittenForTesting;
 		public bool TermProcIsStarted { get; private set; }
 
 
@@ -270,6 +272,7 @@ namespace EasyWindowsTerminalControl {
 			if (string.IsNullOrEmpty(data) || _ReadOnly)
 				return;
 
+			InputEnqueuedForTesting?.Invoke(data);
 			if (!_inputQueue.Writer.TryWrite(data))
 				throw new InvalidOperationException("Terminal input queue is closed.");
 		}
@@ -277,8 +280,10 @@ namespace EasyWindowsTerminalControl {
 		private async Task WriteInputQueueAsync() {
 			try {
 				await foreach (var data in _inputQueue.Reader.ReadAllAsync().ConfigureAwait(false)) {
-					if (!string.IsNullOrEmpty(data))
+					if (!string.IsNullOrEmpty(data)) {
 						WriteToTerm(data.AsSpan());
+						InputWrittenForTesting?.Invoke(data);
+					}
 				}
 			}
 			catch (IOException) {
