@@ -1,11 +1,11 @@
-using System.Windows;
+using System.Diagnostics;
 using System.IO;
+using System.Text;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
-using EasyWindowsTerminalControl;
-using Microsoft.Terminal.Wpf;
 
 namespace MultiKilo.Terminal;
 
@@ -22,10 +22,16 @@ internal static class TerminalSmokeTest
         {
             for (var i = 0; i < 3; i++)
             {
-                sessions.Add(await SmokeSession.StartAsync(i + 1));
+                sessions.Add(await SmokeSession.StartAsync());
             }
 
-            var host = new Grid { Width = 720, Height = 420, Background = System.Windows.Media.Brushes.Black };
+            var host = new Grid
+            {
+                Width = 720,
+                Height = 420,
+                Background = System.Windows.Media.Brushes.Black
+            };
+
             foreach (var session in sessions)
             {
                 session.View.Visibility = Visibility.Hidden;
@@ -44,6 +50,9 @@ internal static class TerminalSmokeTest
             };
             window.Show();
 
+            await Task.WhenAll(sessions.Select(static session =>
+                session.Connection.IoStarted.WaitAsync(TimeSpan.FromSeconds(10))));
+
             foreach (var session in sessions)
             {
                 foreach (UIElement child in host.Children)
@@ -52,7 +61,9 @@ internal static class TerminalSmokeTest
                 }
 
                 session.View.Visibility = Visibility.Visible;
-                await System.Windows.Application.Current.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                await System.Windows.Application.Current.Dispatcher.InvokeAsync(
+                    () => { },
+                    DispatcherPriority.ApplicationIdle);
             }
 
             window.Width = 960;
@@ -73,54 +84,74 @@ internal static class TerminalSmokeTest
                 () => { },
                 DispatcherPriority.ApplicationIdle);
 
-            var windowHwnd = new WindowInteropHelper(window).Handle;
-            var terminalHwnd = NativeTerminalClipboard.FindVisibleTerminalDescendant(windowHwnd);
+            var terminalHwnd = NativeTerminalClipboard.FindVisibleTerminalDescendant(
+                new WindowInteropHelper(window).Handle);
             if (terminalHwnd == IntPtr.Zero)
             {
                 return 23;
             }
 
-            const string nativePasteToken = "MULTIKILO_NATIVE_TEXT_PASTE";
-            System.Windows.Clipboard.SetText($"Write-Output '{nativePasteToken}'");
-            sessions[0].Term.BeginNativePaste();
+            var largePaste = CreateLargePastePayload();
+            var expectedPasteBytes = Encoding.UTF8.GetByteCount(largePaste) + 12;
+            var rawReaderCommand =
+                "$e=[char]27;[Console]::Write($e+'[?2004h');" +
+                "$s=[Console]::OpenStandardInput();" +
+                "$b=New-Object byte[] 65536;" +
+                $"$target={expectedPasteBytes};$total=0;" +
+                "while($total -lt $target){" +
+                "$want=[Math]::Min($b.Length,$target-$total);" +
+                "$n=$s.Read($b,0,$want);if($n -le 0){break};$total+=$n};" +
+                "[Console]::WriteLine('RAWPASTE_BYTES='+$total)";
+
+            sessions[0].Connection.WriteRawInput(rawReaderCommand + "\r");
+            await Task.Delay(400);
+
+            System.Windows.Clipboard.SetText(largePaste);
+
+            var pasteTimer = Stopwatch.StartNew();
+            sessions[0].Connection.BeginNativePaste();
             try
             {
                 NativeTerminalClipboard.InvokeNativeCopyOrPaste(terminalHwnd);
             }
             finally
             {
-                sessions[0].Term.EndNativePaste();
+                sessions[0].Connection.EndNativePaste();
             }
+            pasteTimer.Stop();
 
-            await Task.Delay(250);
-            sessions[0].Term.WriteToTerm("\r");
-            await Task.Delay(500);
-
-            if (!sessions[0].Term.GetConsoleText(stripVTCodes: false)
-                    .Contains(nativePasteToken, StringComparison.Ordinal))
+            if (pasteTimer.Elapsed > TimeSpan.FromSeconds(1))
             {
                 return 24;
+            }
+
+            if (!await WaitForOutputAsync(
+                    sessions[0].Connection,
+                    $"RAWPASTE_BYTES={expectedPasteBytes}",
+                    TimeSpan.FromSeconds(10)))
+            {
+                return 25;
             }
 
             for (var i = 0; i < sessions.Count; i++)
             {
                 var token = $"MULTIKILO_SMOKE_{i + 1}";
-                sessions[i].Term.WriteToTerm(
+                sessions[i].Connection.WriteRawInput(
                     $"[Console]::Write(([char]27).ToString() + \"[38;2;12;34;56m{token}\" + ([char]27) + \"[0m Tiếng Việt: Trường Sa, tiếng Việt ✓\" + [Environment]::NewLine)\r");
             }
 
-            await Task.Delay(400);
+            await Task.Delay(500);
 
             await sessions[1].TerminateAsync();
-            if (sessions[0].Term.Process?.HasExited != false ||
-                sessions[2].Term.Process?.HasExited != false)
+            if (sessions[0].Connection.ProcessHasExited ||
+                sessions[2].Connection.ProcessHasExited)
             {
                 return 21;
             }
 
             const string expected = "Tiếng Việt: Trường Sa, tiếng Việt ✓";
-            if (!sessions[0].Term.GetConsoleText(stripVTCodes: false).Contains(expected, StringComparison.Ordinal) ||
-                !sessions[2].Term.GetConsoleText(stripVTCodes: false).Contains(expected, StringComparison.Ordinal))
+            if (!sessions[0].Connection.GetCapturedOutput().Contains(expected, StringComparison.Ordinal) ||
+                !sessions[2].Connection.GetCapturedOutput().Contains(expected, StringComparison.Ordinal))
             {
                 return 22;
             }
@@ -155,95 +186,86 @@ internal static class TerminalSmokeTest
         }
     }
 
+    private static async Task<bool> WaitForOutputAsync(
+        NativeConPtyConnection connection,
+        string expected,
+        TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            if (connection.GetCapturedOutput().Contains(expected, StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            await Task.Delay(50);
+        }
+
+        return false;
+    }
+
+    private static string CreateLargePastePayload()
+    {
+        const string line = "Tiếng Việt — Trường Sa — Unicode ✓ — MultiKilo paste test 0123456789\n";
+        var builder = new StringBuilder(1_100_000);
+
+        while (Encoding.UTF8.GetByteCount(builder.ToString()) < 1_048_576)
+        {
+            builder.Append(line);
+        }
+
+        return builder.ToString();
+    }
+
     private sealed class SmokeSession
     {
-        private SmokeSession(JobObject job, BufferedTermPTY term, EasyTerminalControl view, Task lifetime)
+        private SmokeSession(
+            JobObject job,
+            NativeConPtyConnection connection,
+            TerminalSessionView view)
         {
             Job = job;
-            Term = term;
+            Connection = connection;
             View = view;
-            Lifetime = lifetime;
         }
 
         public JobObject Job { get; }
-        public BufferedTermPTY Term { get; }
-        public EasyTerminalControl View { get; }
-        public Task Lifetime { get; }
+        public NativeConPtyConnection Connection { get; }
+        public TerminalSessionView View { get; }
 
-        public static async Task<SmokeSession> StartAsync(int index)
+        public static async Task<SmokeSession> StartAsync()
         {
             var job = new JobObject();
-            var term = new BufferedTermPTY();
-            var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            term.TermReady += (_, _) => ready.TrySetResult();
+            var connection = new NativeConPtyConnection(
+                PwshCommand,
+                Environment.CurrentDirectory,
+                job,
+                captureOutput: true);
+            var view = new TerminalSessionView(connection);
 
-            var view = CreateView(term);
-            var factory = new JobAssigningProcessFactory(job);
-            var lifetime = Task.Run(() =>
-                term.Start(
-                    PwshCommand,
-                    consoleWidth: 100,
-                    consoleHeight: 28,
-                    logOutput: true,
-                    factory: factory,
-                    workingDirectory: Environment.CurrentDirectory));
-
-            var first = await Task.WhenAny(ready.Task, lifetime, Task.Delay(TimeSpan.FromSeconds(15)));
-            if (first != ready.Task)
-            {
-                job.Terminate();
-                try { await lifetime; } catch { }
-                throw new InvalidOperationException($"Smoke session {index} did not start.");
-            }
-
-            await ready.Task;
-            return new SmokeSession(job, term, view, lifetime);
+            await connection.StartProcessAsync().WaitAsync(TimeSpan.FromSeconds(15));
+            return new SmokeSession(job, connection, view);
         }
 
         public async Task TerminateAsync()
         {
+            Connection.CompleteInput();
             try { Job.Terminate(); } catch { }
-            try { await Lifetime.WaitAsync(TimeSpan.FromSeconds(5)); } catch { }
+            try { await Connection.Completion.WaitAsync(TimeSpan.FromSeconds(5)); } catch { }
         }
 
         public async ValueTask DisposeAsync()
         {
-            if (!Lifetime.IsCompleted)
+            if (!Connection.ProcessHasExited)
             {
                 await TerminateAsync();
             }
 
+            View.Disconnect();
+            Connection.Dispose();
             Job.Dispose();
-        }
-
-        private static EasyTerminalControl CreateView(BufferedTermPTY term)
-        {
-            var theme = new TerminalTheme
-            {
-                DefaultBackground = 0x0C0C0C,
-                DefaultForeground = 0xCCCCCC,
-                DefaultSelectionBackground = 0x777777,
-                CursorStyle = CursorStyle.BlinkingBar,
-                ColorTable =
-                [
-                    0x0C0C0C, 0x1F0FC5, 0x0EA113, 0x009CC1,
-                    0xDA3700, 0x981788, 0xDD963A, 0xCCCCCC,
-                    0x767676, 0x5648E7, 0x0CC616, 0xA5F1F9,
-                    0xFF783B, 0x9E00B4, 0xD6D661, 0xF2F2F2
-                ]
-            };
-
-            return new EasyTerminalControl
-            {
-                ConPTYTerm = term,
-                StartupCommandLine = PwshCommand,
-                Win32InputMode = true,
-                InputCapture = EasyTerminalControl.INPUT_CAPTURE.TabKey |
-                               EasyTerminalControl.INPUT_CAPTURE.DirectionKeys,
-                Theme = theme,
-                FontFamilyWhenSettingTheme = new System.Windows.Media.FontFamily("Cascadia Mono"),
-                FontSizeWhenSettingTheme = 13
-            };
         }
     }
 }

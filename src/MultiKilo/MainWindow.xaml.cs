@@ -184,7 +184,7 @@ public partial class MainWindow : Window
         {
             SetActionButtonsEnabled(false);
             await session.TerminateAsync();
-            oldView?.DisconnectConPTYTerm();
+            oldView?.Disconnect();
             DetachView(oldView);
             await session.StartAsync(continueSession: true);
             AttachView(session.View);
@@ -254,7 +254,7 @@ public partial class MainWindow : Window
 
         if (session is not null)
         {
-            session.View?.DisconnectConPTYTerm();
+            session.View?.Disconnect();
             DetachView(session.View);
             _sessions.Remove(project.Id);
         }
@@ -293,7 +293,7 @@ public partial class MainWindow : Window
         try
         {
             SetActionButtonsEnabled(false);
-            oldView?.DisconnectConPTYTerm();
+            oldView?.Disconnect();
             DetachView(oldView);
             await session.StartAsync(continueSession);
             AttachView(session.View);
