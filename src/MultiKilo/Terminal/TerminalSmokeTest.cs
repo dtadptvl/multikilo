@@ -144,7 +144,7 @@ internal static class TerminalSmokeTest
             $isBracketed = $text.StartsWith($start) -and $text.EndsWith($end)
             $hasUnicode = $text.Contains("Tiếng Việt")
             $crCount = ($text.ToCharArray() | Where-Object { $_ -eq [char]13 }).Count
-            [Console]::Write("MULTIKILO_BRACKET_RESULT:$isBracketed:$hasUnicode:$crCount" + $crlf)
+            [Console]::Write("MULTIKILO_BRACKET_RESULT:${isBracketed}:${hasUnicode}:${crCount}" + $crlf)
             """,
             new UTF8Encoding(false));
 
