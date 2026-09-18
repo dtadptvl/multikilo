@@ -429,7 +429,7 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
         }
     }
 
-    private void TrackBracketedPasteMode(string output)
+    internal void TrackBracketedPasteMode(string output)
     {
         foreach (var ch in output)
         {
