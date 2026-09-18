@@ -280,8 +280,7 @@ internal static class TerminalSmokeTest
 
             terminal.StartSession(
                 $"pwsh.exe -NoLogo -NoProfile -File \"{bracketScriptPath}\"",
-                tempDir,
-                bracketedPasteSupported: true);
+                tempDir);
 
             if (!await WaitForConditionAsync(
                     () => ContainsOutput("MULTIKILO_WT_ENV:True:True"),
