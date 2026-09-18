@@ -40,20 +40,14 @@ if (-not $vsWithUwp) {
     }
 
     Write-Host "Installing Visual Studio 2022 v143 UWP C++ build tools..."
-    $installerArgs = @(
-        "modify",
-        "--installPath", $vs2022,
-        "--add", $uwpComponent,
-        "--quiet",
-        "--norestart"
-    )
+    $installerArgs = "modify --installPath `"$vs2022`" --add $uwpComponent --quiet --norestart"
     $process = Start-Process -FilePath $vsInstaller -ArgumentList $installerArgs -PassThru -Wait
     if ($process.ExitCode -notin @(0, 3010)) {
         throw "Visual Studio Installer failed with exit code $($process.ExitCode)."
     }
 }
 
-$msbuild = & $vswhere -version "[17.0,18.0)" -products * -requires Microsoft.Component.MSBuild -requires $uwpComponent -find "MSBuild\**\Bin\MSBuild.exe" |
+$msbuild = & $vswhere -version "[17.0,18.0)" -products * -requires Microsoft.Component.MSBuild $uwpComponent -find "MSBuild\**\Bin\MSBuild.exe" |
     Select-Object -First 1
 if (-not $msbuild) {
     throw "Visual Studio 2022 MSBuild with v143 UWP C++ tools was not found."
