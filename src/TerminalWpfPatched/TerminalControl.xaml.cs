@@ -43,11 +43,8 @@ namespace Microsoft.Terminal.Wpf
         /// <summary>
         /// Starts a command inside the terminal-owned native ConPTY session.
         /// </summary>
-        public void StartSession(
-            string commandLine,
-            string workingDirectory,
-            bool bracketedPasteSupported = false) =>
-            this.termContainer.StartSession(commandLine, workingDirectory, bracketedPasteSupported);
+        public void StartSession(string commandLine, string workingDirectory) =>
+            this.termContainer.StartSession(commandLine, workingDirectory);
 
         /// <summary>
         /// Terminates only this terminal's native ConPTY process tree.
