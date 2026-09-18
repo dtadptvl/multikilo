@@ -50,7 +50,7 @@ internal static class TerminalSmokeTest
                 }
 
                 session.View.Visibility = Visibility.Visible;
-                await Application.Current.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                await System.Windows.Application.Current.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             }
 
             window.Width = 960;

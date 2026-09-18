@@ -176,7 +176,7 @@ public sealed class ProjectSession
             return;
         }
 
-        await Application.Current.Dispatcher.InvokeAsync(() =>
+        await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
         {
             _term?.CompleteInput();
             _job?.Dispose();

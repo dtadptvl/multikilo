@@ -66,8 +66,8 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Could not read projects.json.\n\n{ex.Message}", "MultiKilo",
-                MessageBoxButton.OK, MessageBoxImage.Error);
+            System.Windows.MessageBox.Show(this, $"Could not read projects.json.\n\n{ex.Message}", "MultiKilo",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
         }
     }
 
@@ -202,11 +202,11 @@ public partial class MainWindow : Window
         var session = _sessions.GetValueOrDefault(project.Id);
         if (session?.IsLive == true)
         {
-            var result = MessageBox.Show(this,
+            var result = System.Windows.MessageBox.Show(this,
                 "This project is running. Terminate its Kilo session and remove the project?",
-                "Remove project", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+                "Remove project", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning, System.Windows.MessageBoxResult.No);
 
-            if (result != MessageBoxResult.Yes)
+            if (result != System.Windows.MessageBoxResult.Yes)
             {
                 return;
             }
@@ -379,8 +379,8 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Could not save projects.json.\n\n{ex.Message}", "MultiKilo",
-                MessageBoxButton.OK, MessageBoxImage.Error);
+            System.Windows.MessageBox.Show(this, $"Could not save projects.json.\n\n{ex.Message}", "MultiKilo",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
         }
     }
 
@@ -400,9 +400,9 @@ public partial class MainWindow : Window
 
     private void ShowSessionError(string message, Exception ex)
     {
-        MessageBox.Show(this,
+        System.Windows.MessageBox.Show(this,
             $"{message}\n\n{ex.Message}\n\nMake sure pwsh.exe and kilo are available on PATH.",
-            "MultiKilo", MessageBoxButton.OK, MessageBoxImage.Error);
+            "MultiKilo", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
     }
 
     private void OnThreadPreprocessMessage(ref MSG msg, ref bool handled)
@@ -435,16 +435,16 @@ public partial class MainWindow : Window
             var selectedText = session.GetSelectedText();
             if (!string.IsNullOrEmpty(selectedText))
             {
-                Clipboard.SetText(selectedText);
+                System.Windows.Clipboard.SetText(selectedText);
             }
 
             handled = true;
         }
         else if (pasteShortcut)
         {
-            if (Clipboard.ContainsText())
+            if (System.Windows.Clipboard.ContainsText())
             {
-                session.Paste(Clipboard.GetText());
+                session.Paste(System.Windows.Clipboard.GetText());
             }
 
             handled = true;
@@ -488,11 +488,11 @@ public partial class MainWindow : Window
     {
         if (HasLiveSessions)
         {
-            var result = MessageBox.Show(this,
+            var result = System.Windows.MessageBox.Show(this,
                 "Terminate all Kilo sessions and exit?",
-                "Quit MultiKilo", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+                "Quit MultiKilo", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning, System.Windows.MessageBoxResult.No);
 
-            if (result != MessageBoxResult.Yes)
+            if (result != System.Windows.MessageBoxResult.Yes)
             {
                 return;
             }
@@ -531,7 +531,7 @@ public partial class MainWindow : Window
 
         _trayDrawingIcon?.Dispose();
         _trayDrawingIcon = null;
-        Application.Current.Shutdown();
+        System.Windows.Application.Current.Shutdown();
     }
 
     [DllImport("user32.dll")]
