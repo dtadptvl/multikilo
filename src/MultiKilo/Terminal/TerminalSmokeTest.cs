@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Channels;
@@ -172,7 +173,7 @@ internal static class TerminalSmokeTest
         {
             Width = 760,
             Height = 440,
-            Background = Brushes.Black
+            Background = System.Windows.Media.Brushes.Black
         };
         var window = new System.Windows.Window
         {

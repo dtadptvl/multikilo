@@ -265,7 +265,7 @@ namespace EasyWindowsTerminalControl {
 		public static readonly DependencyProperty IsReadOnlyProperty = PropHelper.GenerateWriteOnlyProperty((c) => c.IsReadOnly);
 		public static readonly DependencyProperty IsCursorVisibleProperty = PropHelper.GenerateWriteOnlyProperty((c) => c.IsCursorVisible);
 
-		public static readonly DependencyProperty FontFamilyWhenSettingThemeProperty = DependencyProperty.Register(nameof(FontFamilyWhenSettingTheme), typeof(FontFamily), typeof(EasyTerminalControl), new PropertyMetadata(new WpfFontFamily("Cascadia Code")));
+		public static readonly DependencyProperty FontFamilyWhenSettingThemeProperty = DependencyProperty.Register(nameof(FontFamilyWhenSettingTheme), typeof(WpfFontFamily), typeof(EasyTerminalControl), new PropertyMetadata(new WpfFontFamily("Cascadia Code")));
 
 		public static readonly DependencyProperty FontSizeWhenSettingThemeProperty = DependencyProperty.Register(nameof(FontSizeWhenSettingTheme), typeof(int), typeof(EasyTerminalControl), new PropertyMetadata(12));
 
