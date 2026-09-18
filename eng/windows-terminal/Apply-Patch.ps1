@@ -822,6 +822,8 @@ $charNew = @'
     {
         const auto lock = _terminal->LockForWriting();
 '@
+$charOld = $charOld.Replace([string][char]13 + [char]10, [string][char]10)
+$charNew = $charNew.Replace([string][char]13 + [char]10, [string][char]10)
 $localIndex = $charTail.IndexOf($charOld)
 if ($localIndex -lt 0) { throw "_SendCharEvent output anchor not found" }
 $absoluteIndex = $charIndex + $localIndex
