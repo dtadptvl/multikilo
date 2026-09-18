@@ -313,6 +313,8 @@ namespace
         std::atomic<void*> context{ nullptr };
         std::atomic<MultiKiloOutputCallback> outputCallback{ nullptr };
         std::atomic<MultiKiloExitCallback> exitCallback{ nullptr };
+        winrt::event_token outputToken{};
+        bool outputSubscribed{ false };
     };
 }
 
@@ -382,7 +384,7 @@ try
             }
         });
 
-    holder->connection->TerminalOutput([raw](const winrt::array_view<const char16_t> output) {
+    holder->outputToken = holder->connection->TerminalOutput([raw](const winrt::array_view<const char16_t> output) {
         const auto callback = raw->outputCallback.load();
         const auto callbackContext = raw->context.load();
         if (callback && callbackContext && !output.empty())
@@ -393,6 +395,7 @@ try
                 gsl::narrow_cast<uint32_t>(output.size()));
         }
     });
+    holder->outputSubscribed = true;
 
     holder->connection->Start();
 
@@ -460,9 +463,20 @@ try
         return;
     }
 
+    if (holder->connection && holder->outputSubscribed)
+    {
+        holder->connection->TerminalOutput(holder->outputToken);
+        holder->outputSubscribed = false;
+    }
+
     holder->outputCallback = nullptr;
     holder->exitCallback = nullptr;
     holder->context = nullptr;
+
+    if (holder->connection)
+    {
+        holder->connection->MultiKiloSetExitCallback(nullptr, nullptr);
+    }
 
     if (holder->job && holder->running)
     {
@@ -471,7 +485,9 @@ try
 
     if (holder->connection)
     {
-        holder->connection->MultiKiloSetExitCallback(nullptr, nullptr);
+        // Close waits for the ConptyConnection output thread to stop. Because
+        // the event has already been revoked, no callback can touch the holder
+        // after this point.
         holder->connection->Close();
     }
 
