@@ -33,10 +33,44 @@ if ($process.ExitCode -ne 0) {
     }
 
     Write-Host "Recent Application Error / WER events:"
-    Get-WinEvent -FilterHashtable @{ LogName = "Application"; StartTime = (Get-Date).AddMinutes(-5) } -ErrorAction SilentlyContinue |
+    $recentEvents = @(Get-WinEvent -FilterHashtable @{ LogName = "Application"; StartTime = (Get-Date).AddMinutes(-5) } -ErrorAction SilentlyContinue |
         Where-Object { $_.ProviderName -in @("Application Error", "Windows Error Reporting") } |
-        Select-Object -First 12 TimeCreated, ProviderName, Id, Message |
-        Format-List
+        Select-Object -First 12 TimeCreated, ProviderName, Id, Message)
+    $recentEvents | Format-List
+
+    $terminalCrash = $recentEvents |
+        Where-Object { $_.Message -match "Faulting application name: MultiKilo\.exe" -and $_.Message -match "Faulting module name: TerminalConnection\.dll" } |
+        Select-Object -First 1
+
+    $mapPath = ".\artifacts\terminal\win-x64\TerminalConnection.map"
+    if ($terminalCrash -and (Test-Path $mapPath) -and $terminalCrash.Message -match "Fault offset:\s+0x([0-9a-fA-F]+)") {
+        $faultRva = [Convert]::ToUInt64($Matches[1], 16)
+        $mapLines = Get-Content $mapPath
+        $preferredLine = $mapLines | Where-Object { $_ -match "Preferred load address is\s+([0-9A-Fa-f]+)" } | Select-Object -First 1
+
+        if ($preferredLine -match "Preferred load address is\s+([0-9A-Fa-f]+)") {
+            $preferredBase = [Convert]::ToUInt64($Matches[1], 16)
+            $faultVa = $preferredBase + $faultRva
+            $nearest = $null
+            $nearestVa = [UInt64]0
+
+            foreach ($line in $mapLines) {
+                if ($line -match "^\s*[0-9A-Fa-f]+:[0-9A-Fa-f]+\s+(.+?)\s+([0-9A-Fa-f]{16})\s") {
+                    $symbol = $Matches[1].Trim()
+                    $symbolVa = [Convert]::ToUInt64($Matches[2], 16)
+                    if ($symbolVa -le $faultVa -and $symbolVa -ge $nearestVa) {
+                        $nearestVa = $symbolVa
+                        $nearest = $symbol
+                    }
+                }
+            }
+
+            if ($nearest) {
+                $delta = $faultVa - $nearestVa
+                Write-Host ("TerminalConnection fault symbol: {0}+0x{1:x} (RVA 0x{2:x})" -f $nearest, $delta, $faultRva)
+            }
+        }
+    }
 
     $dumps = @(Get-ChildItem $dumpRoot -Filter "MultiKilo*.dmp" -File -ErrorAction SilentlyContinue)
     foreach ($dump in $dumps) {
