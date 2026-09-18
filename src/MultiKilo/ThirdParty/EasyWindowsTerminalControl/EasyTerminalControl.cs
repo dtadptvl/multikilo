@@ -163,7 +163,6 @@ namespace EasyWindowsTerminalControl {
 		}
 		private void InitializeComponent() {
 			Terminal = new();
-			ConPTYTerm = new();
 			Terminal.AutoResize = true;
 			Terminal.Loaded += Terminal_Loaded;
 			var grid = new Grid() { };
@@ -235,7 +234,8 @@ namespace EasyWindowsTerminalControl {
 		}
 
 		private async Task TermInit() {
-			StartTerm(Terminal.Columns, Terminal.Rows);
+			// MultiKilo owns the ConPTY/process lifecycle. This control only
+			// connects the already-assigned TermPTY when TermReady fires.
 			SetTheme(Theme);
 			SetCursor(IsCursorVisible);
 			SetReadOnly(IsReadOnly);

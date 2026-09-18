@@ -341,6 +341,19 @@ public partial class MainWindow : Window
         await Dispatcher.InvokeAsync(
             () => { },
             DispatcherPriority.Loaded);
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (view.Terminal.NativeTerminalForTesting == IntPtr.Zero &&
+               DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        if (view.Terminal.NativeTerminalForTesting == IntPtr.Zero)
+        {
+            throw new InvalidOperationException(
+                "Native Windows Terminal control did not initialize.");
+        }
     }
 
     private ProjectSession GetSession(ProjectDefinition project)
