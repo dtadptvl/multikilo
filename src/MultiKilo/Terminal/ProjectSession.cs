@@ -108,12 +108,6 @@ public sealed class ProjectSession
         }
     }
 
-    public async Task RestartAsync()
-    {
-        await TerminateAsync();
-        await StartAsync(continueSession: true);
-    }
-
     public async Task TerminateAsync()
     {
         if (!IsLive && _job is null)
