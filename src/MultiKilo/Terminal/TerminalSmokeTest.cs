@@ -119,14 +119,14 @@ internal static class TerminalSmokeTest
             "MultiKilo-Smoke-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
-        var scriptPath = Path.Combine(tempDir, "bracket-smoke.ps1");
+        var bracketScriptPath = Path.Combine(tempDir, "bracket-smoke.ps1");
         File.WriteAllText(
-            scriptPath,
+            bracketScriptPath,
             """
             Add-Type -TypeDefinition @"
             using System;
             using System.Runtime.InteropServices;
-            public static class MultiKiloConsoleMode {
+            public static class MultiKiloRawConsole {
                 [DllImport("kernel32.dll", SetLastError = true)]
                 public static extern IntPtr GetStdHandle(int nStdHandle);
                 [DllImport("kernel32.dll", SetLastError = true)]
@@ -135,15 +135,12 @@ internal static class TerminalSmokeTest
                 [DllImport("kernel32.dll", SetLastError = true)]
                 [return: MarshalAs(UnmanagedType.Bool)]
                 public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
-                [DllImport("kernel32.dll", SetLastError = true)]
-                [return: MarshalAs(UnmanagedType.Bool)]
-                public static extern bool ReadConsoleW(IntPtr hConsoleInput, char[] buffer, uint charsToRead, out uint charsRead, IntPtr inputControl);
             }
             "@
 
-            $stdin = [MultiKiloConsoleMode]::GetStdHandle(-10)
+            $stdin = [MultiKiloRawConsole]::GetStdHandle(-10)
             [uint32]$mode = 0
-            if (-not [MultiKiloConsoleMode]::GetConsoleMode($stdin, [ref]$mode)) {
+            if (-not [MultiKiloRawConsole]::GetConsoleMode($stdin, [ref]$mode)) {
                 throw "GetConsoleMode failed"
             }
 
@@ -151,33 +148,115 @@ internal static class TerminalSmokeTest
             $ENABLE_ECHO_INPUT = 0x0004
             $ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
             $rawMode = ($mode -band (-bnot ($ENABLE_LINE_INPUT -bor $ENABLE_ECHO_INPUT))) -bor $ENABLE_VIRTUAL_TERMINAL_INPUT
-            if (-not [MultiKiloConsoleMode]::SetConsoleMode($stdin, $rawMode)) {
+            if (-not [MultiKiloRawConsole]::SetConsoleMode($stdin, $rawMode)) {
                 throw "SetConsoleMode failed"
             }
+
             $esc = [char]27
             $crlf = ([char]13).ToString() + ([char]10)
-            $start = "$esc[200~"
-            $end = "$esc[201~"
             [Console]::Write("$esc[?2004h")
             [Console]::Write("MULTIKILO_BRACKET_READY" + $crlf)
 
+            $stream = [Console]::OpenStandardInput()
+            $bytes = [System.Collections.Generic.List[byte]]::new()
+            $startBytes = [byte[]](27, 91, 50, 48, 48, 126)
+            $endBytes = [byte[]](27, 91, 50, 48, 49, 126)
+
+            while ($bytes.Count -lt 400000) {
+                $value = $stream.ReadByte()
+                if ($value -lt 0) { break }
+                $bytes.Add([byte]$value)
+
+                if ($bytes.Count -ge $endBytes.Length) {
+                    $matchesEnd = $true
+                    for ($i = 0; $i -lt $endBytes.Length; $i++) {
+                        if ($bytes[$bytes.Count - $endBytes.Length + $i] -ne $endBytes[$i]) {
+                            $matchesEnd = $false
+                            break
+                        }
+                    }
+                    if ($matchesEnd) { break }
+                }
+            }
+
+            $isBracketed = $bytes.Count -ge ($startBytes.Length + $endBytes.Length)
+            if ($isBracketed) {
+                for ($i = 0; $i -lt $startBytes.Length; $i++) {
+                    if ($bytes[$i] -ne $startBytes[$i]) {
+                        $isBracketed = $false
+                        break
+                    }
+                }
+            }
+            if ($isBracketed) {
+                for ($i = 0; $i -lt $endBytes.Length; $i++) {
+                    if ($bytes[$bytes.Count - $endBytes.Length + $i] -ne $endBytes[$i]) {
+                        $isBracketed = $false
+                        break
+                    }
+                }
+            }
+
+            $crCount = @($bytes | Where-Object { $_ -eq 13 }).Count
+            [Console]::Write("$esc[?2004l")
+            [Console]::Write("MULTIKILO_BRACKET_RESULT:${isBracketed}:${crCount}" + $crlf)
+            """,
+            new UTF8Encoding(false));
+
+        var unicodeScriptPath = Path.Combine(tempDir, "unicode-smoke.ps1");
+        File.WriteAllText(
+            unicodeScriptPath,
+            """
+            Add-Type -TypeDefinition @"
+            using System;
+            using System.Runtime.InteropServices;
+            public static class MultiKiloWideConsole {
+                [DllImport("kernel32.dll", SetLastError = true)]
+                public static extern IntPtr GetStdHandle(int nStdHandle);
+                [DllImport("kernel32.dll", SetLastError = true)]
+                [return: MarshalAs(UnmanagedType.Bool)]
+                public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+                [DllImport("kernel32.dll", SetLastError = true)]
+                [return: MarshalAs(UnmanagedType.Bool)]
+                public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+                [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+                [return: MarshalAs(UnmanagedType.Bool)]
+                public static extern bool ReadConsoleW(IntPtr hConsoleInput, char[] buffer, uint charsToRead, out uint charsRead, IntPtr inputControl);
+            }
+            "@
+
+            $stdin = [MultiKiloWideConsole]::GetStdHandle(-10)
+            [uint32]$mode = 0
+            if (-not [MultiKiloWideConsole]::GetConsoleMode($stdin, [ref]$mode)) {
+                throw "GetConsoleMode failed"
+            }
+
+            $ENABLE_LINE_INPUT = 0x0002
+            $ENABLE_ECHO_INPUT = 0x0004
+            $ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
+            $wideMode = $mode -band (-bnot ($ENABLE_LINE_INPUT -bor $ENABLE_ECHO_INPUT -bor $ENABLE_VIRTUAL_TERMINAL_INPUT))
+            if (-not [MultiKiloWideConsole]::SetConsoleMode($stdin, $wideMode)) {
+                throw "SetConsoleMode failed"
+            }
+
+            $expected = "Tiếng Việt — Trường Sa — Unicode ✓"
+            $crlf = ([char]13).ToString() + ([char]10)
+            [Console]::Write("MULTIKILO_UNICODE_READY" + $crlf)
+
             $builder = [System.Text.StringBuilder]::new()
-            $buffer = New-Object char[] 4096
-            while ($builder.Length -lt 200000) {
+            $buffer = New-Object char[] 128
+            while ($builder.Length -lt $expected.Length) {
                 [uint32]$read = 0
-                if (-not [MultiKiloConsoleMode]::ReadConsoleW($stdin, $buffer, [uint32]$buffer.Length, [ref]$read, [IntPtr]::Zero)) {
+                if (-not [MultiKiloWideConsole]::ReadConsoleW($stdin, $buffer, [uint32]$buffer.Length, [ref]$read, [IntPtr]::Zero)) {
                     throw "ReadConsoleW failed"
                 }
                 if ($read -eq 0) { break }
                 [void]$builder.Append($buffer, 0, [int]$read)
-                if ($builder.ToString().EndsWith($end)) { break }
             }
 
-            $text = $builder.ToString()
-            $isBracketed = $text.StartsWith($start) -and $text.EndsWith($end)
-            $hasUnicode = $text.Contains("Tiếng Việt")
-            $crCount = ($text.ToCharArray() | Where-Object { $_ -eq [char]13 }).Count
-            [Console]::Write("MULTIKILO_BRACKET_RESULT:${isBracketed}:${hasUnicode}:${crCount}" + $crlf)
+            $actual = $builder.ToString()
+            $ok = $actual.StartsWith($expected, [System.StringComparison]::Ordinal)
+            [Console]::Write("MULTIKILO_UNICODE_RESULT:${ok}:LEN=${actual.Length}" + $crlf)
             """,
             new UTF8Encoding(false));
 
@@ -197,53 +276,59 @@ internal static class TerminalSmokeTest
             terminal.SetTheme(CreateTheme(), "Cascadia Mono", 13);
 
             terminal.StartSession(
-                $"pwsh.exe -NoLogo -NoProfile -File \"{scriptPath}\"",
+                $"pwsh.exe -NoLogo -NoProfile -File \"{bracketScriptPath}\"",
                 tempDir);
 
             if (!await WaitForConditionAsync(
                     () => ContainsOutput("MULTIKILO_BRACKET_READY"),
                     TimeSpan.FromSeconds(10)))
             {
-                string snapshot;
-                lock (outputGate)
-                {
-                    snapshot = output.ToString();
-                }
-
-                return Fail(
+                return FailWithSnapshot(
                     55,
-                    "Native ConPTY test app never enabled bracketed paste mode. " +
-                    $"Running={terminal.IsSessionRunning}; ExitCode={sessionExitCode?.ToString() ?? "<none>"}; " +
-                    $"Output={snapshot.Replace("\x1b", "<ESC>")}");
+                    "Native ConPTY test app never enabled bracketed paste mode.");
             }
 
-            var payload = Create288LinePastePayload();
-            System.Windows.Clipboard.SetText(payload);
-
-            var pasteTask = Task.Run(
-                () => NativeMethods.TerminalPasteFromClipboard(
-                    terminal.NativeTerminalForTesting));
-
-            await System.Windows.Application.Current.Dispatcher.InvokeAsync(
-                () => { },
-                DispatcherPriority.Input).Task.WaitAsync(TimeSpan.FromSeconds(1));
-
-            await pasteTask.WaitAsync(TimeSpan.FromSeconds(2));
+            System.Windows.Clipboard.SetText(Create288LinePastePayload());
+            terminal.Paste();
 
             if (!await WaitForConditionAsync(
-                    () => ContainsOutput("MULTIKILO_BRACKET_RESULT:True:True:288"),
+                    () => ContainsOutput("MULTIKILO_BRACKET_RESULT:True:288"),
                     TimeSpan.FromSeconds(10)))
             {
-                string snapshot;
-                lock (outputGate)
-                {
-                    snapshot = output.ToString();
-                }
-
-                return Fail(
+                return FailWithSnapshot(
                     56,
-                    "288-line native paste did not arrive as one bracketed transaction. " +
-                    $"Output={snapshot.Replace("\x1b", "<ESC>")}");
+                    "288-line native paste did not arrive as one bracketed transaction.");
+            }
+
+            terminal.TerminateSession();
+            await WaitForConditionAsync(
+                () => !terminal.IsSessionRunning,
+                TimeSpan.FromSeconds(5));
+
+            sessionExitCode = null;
+            terminal.StartSession(
+                $"pwsh.exe -NoLogo -NoProfile -File \"{unicodeScriptPath}\"",
+                tempDir);
+
+            if (!await WaitForConditionAsync(
+                    () => ContainsOutput("MULTIKILO_UNICODE_READY"),
+                    TimeSpan.FromSeconds(10)))
+            {
+                return FailWithSnapshot(
+                    61,
+                    "Unicode ConPTY test app did not become ready.");
+            }
+
+            System.Windows.Clipboard.SetText("Tiếng Việt — Trường Sa — Unicode ✓");
+            terminal.Paste();
+
+            if (!await WaitForConditionAsync(
+                    () => ContainsOutput("MULTIKILO_UNICODE_RESULT:True:"),
+                    TimeSpan.FromSeconds(10)))
+            {
+                return FailWithSnapshot(
+                    62,
+                    "Native ConPTY paste did not preserve Vietnamese/Unicode text.");
             }
 
             return 0;
@@ -282,6 +367,21 @@ internal static class TerminalSmokeTest
             {
                 return output.ToString().Contains(value, StringComparison.Ordinal);
             }
+        }
+
+        int FailWithSnapshot(int code, string message)
+        {
+            string snapshot;
+            lock (outputGate)
+            {
+                snapshot = output.ToString();
+            }
+
+            return Fail(
+                code,
+                message +
+                $" Running={terminal.IsSessionRunning}; ExitCode={sessionExitCode?.ToString() ?? "<none>"}; " +
+                $"Output={snapshot.Replace("\x1b", "<ESC>")}");
         }
     }
 
