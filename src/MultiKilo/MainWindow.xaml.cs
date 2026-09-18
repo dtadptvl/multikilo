@@ -154,6 +154,7 @@ public partial class MainWindow : Window
         {
             SetActionButtonsEnabled(false);
             await session.TerminateAsync();
+            oldView?.DisconnectConPTYTerm();
             DetachView(oldView);
             await session.StartAsync(continueSession: true);
             AttachView(session.View);
@@ -223,6 +224,7 @@ public partial class MainWindow : Window
 
         if (session is not null)
         {
+            session.View?.DisconnectConPTYTerm();
             DetachView(session.View);
             _sessions.Remove(project.Id);
         }
@@ -261,6 +263,7 @@ public partial class MainWindow : Window
         try
         {
             SetActionButtonsEnabled(false);
+            oldView?.DisconnectConPTYTerm();
             DetachView(oldView);
             await session.StartAsync(continueSession);
             AttachView(session.View);
@@ -381,8 +384,19 @@ public partial class MainWindow : Window
         }
     }
 
-    private static string NormalizeFolder(string folder) =>
-        Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    private static string NormalizeFolder(string folder)
+    {
+        var fullPath = Path.GetFullPath(folder);
+        var root = Path.GetPathRoot(fullPath);
+
+        if (!string.IsNullOrEmpty(root) &&
+            string.Equals(fullPath, root, StringComparison.OrdinalIgnoreCase))
+        {
+            return root;
+        }
+
+        return fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
 
     private void ShowSessionError(string message, Exception ex)
     {
@@ -399,6 +413,7 @@ public partial class MainWindow : Window
         const int VkShift = 0x10;
         const int VkC = 0x43;
         const int VkV = 0x56;
+        const int VkInsert = 0x2D;
 
         if (handled ||
             msg.message is not (WmKeyDown or WmSysKeyDown) ||
@@ -411,13 +426,11 @@ public partial class MainWindow : Window
 
         var ctrl = (GetKeyState(VkControl) & 0x8000) != 0;
         var shift = (GetKeyState(VkShift) & 0x8000) != 0;
-        if (!ctrl || !shift)
-        {
-            return;
-        }
-
         var key = msg.wParam.ToInt32();
-        if (key == VkC)
+        var copyShortcut = (ctrl && shift && key == VkC) || (ctrl && !shift && key == VkInsert);
+        var pasteShortcut = (ctrl && shift && key == VkV) || (!ctrl && shift && key == VkInsert);
+
+        if (copyShortcut)
         {
             var selectedText = session.GetSelectedText();
             if (!string.IsNullOrEmpty(selectedText))
@@ -427,7 +440,7 @@ public partial class MainWindow : Window
 
             handled = true;
         }
-        else if (key == VkV)
+        else if (pasteShortcut)
         {
             if (Clipboard.ContainsText())
             {

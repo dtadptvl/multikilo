@@ -32,7 +32,9 @@ Run scripts\New-PasteFixtures.ps1. Copy each whole file from a normal Windows ed
 - 1000 lines
 - 1 MB mixed Unicode/Vietnamese text
 
-Confirm the UI stays responsive, paste is bulk/fast rather than simulated typing, Unicode survives intact, bracketed paste works, and nothing is truncated.
+Paste with Ctrl+Shift+V (and repeat with Shift+Insert). Confirm the UI stays responsive, paste is bulk/fast rather than simulated typing, Unicode survives intact, bracketed paste works, and nothing is truncated.
+
+Also select terminal text and verify Ctrl+Shift+C and Ctrl+Insert copy it to the Windows clipboard.
 
 ## Tray lifecycle
 
