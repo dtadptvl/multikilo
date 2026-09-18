@@ -32,7 +32,11 @@ jobs:
             $process.Kill($true)
             throw "Smoke test timed out after 30 seconds"
           }
-          if ($process.ExitCode -ne 0) { throw "Smoke test failed with exit code $($process.ExitCode)" }
+          if ($process.ExitCode -ne 0) {
+            $log = Join-Path (Split-Path $exe) "smoke-error.txt"
+            if (Test-Path $log) { Get-Content $log }
+            throw "Smoke test failed with exit code $($process.ExitCode)"
+          }
 
       - name: Publish portable x64 folder
         shell: pwsh

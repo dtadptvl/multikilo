@@ -1,4 +1,5 @@
 using System.Windows;
+using System.IO;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -92,8 +93,18 @@ internal static class TerminalSmokeTest
 
             return 0;
         }
-        catch
+        catch (Exception ex)
         {
+            try
+            {
+                File.WriteAllText(
+                    Path.Combine(AppContext.BaseDirectory, "smoke-error.txt"),
+                    ex.ToString());
+            }
+            catch
+            {
+            }
+
             return 20;
         }
         finally
