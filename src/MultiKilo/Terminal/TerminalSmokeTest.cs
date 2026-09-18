@@ -135,6 +135,9 @@ internal static class TerminalSmokeTest
                 [DllImport("kernel32.dll", SetLastError = true)]
                 [return: MarshalAs(UnmanagedType.Bool)]
                 public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+                [DllImport("kernel32.dll", SetLastError = true)]
+                [return: MarshalAs(UnmanagedType.Bool)]
+                public static extern bool SetConsoleCP(uint wCodePageID);
             }
             "@
 
@@ -151,6 +154,9 @@ internal static class TerminalSmokeTest
             if (-not [MultiKiloConsoleMode]::SetConsoleMode($stdin, $rawMode)) {
                 throw "SetConsoleMode failed"
             }
+            if (-not [MultiKiloConsoleMode]::SetConsoleCP(65001)) {
+                throw "SetConsoleCP failed"
+            }
 
             $esc = [char]27
             $crlf = ([char]13).ToString() + ([char]10)
@@ -159,17 +165,27 @@ internal static class TerminalSmokeTest
             [Console]::Write("$esc[?2004h")
             [Console]::Write("MULTIKILO_BRACKET_READY" + $crlf)
 
-            $builder = [System.Text.StringBuilder]::new()
-            while ($builder.Length -lt 200000) {
-                $value = [Console]::In.Read()
+            $stream = [Console]::OpenStandardInput()
+            $bytes = [System.Collections.Generic.List[byte]]::new()
+            $endBytes = [byte[]](27, 91, 50, 48, 49, 126)
+            while ($bytes.Count -lt 400000) {
+                $value = $stream.ReadByte()
                 if ($value -lt 0) { break }
-                [void]$builder.Append([char]$value)
-                if ($builder.Length -ge $end.Length -and $builder.ToString().EndsWith($end)) {
-                    break
+                $bytes.Add([byte]$value)
+
+                if ($bytes.Count -ge $endBytes.Length) {
+                    $matchesEnd = $true
+                    for ($i = 0; $i -lt $endBytes.Length; $i++) {
+                        if ($bytes[$bytes.Count - $endBytes.Length + $i] -ne $endBytes[$i]) {
+                            $matchesEnd = $false
+                            break
+                        }
+                    }
+                    if ($matchesEnd) { break }
                 }
             }
 
-            $text = $builder.ToString()
+            $text = [System.Text.Encoding]::UTF8.GetString($bytes.ToArray())
             $isBracketed = $text.StartsWith($start) -and $text.EndsWith($end)
             $hasUnicode = $text.Contains("Tiếng Việt")
             $crCount = ($text.ToCharArray() | Where-Object { $_ -eq [char]13 }).Count
