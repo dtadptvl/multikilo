@@ -94,6 +94,11 @@ internal static class TerminalSmokeTest
             var largePaste = CreateLargePastePayload();
             var expectedPasteBytes = Encoding.UTF8.GetByteCount(largePaste) + 12;
             var rawReaderCommand =
+                "Add-Type -Namespace MK -Name Native -MemberDefinition '" +
+                "[DllImport(\"kernel32.dll\")] public static extern IntPtr GetStdHandle(int n);" +
+                "[DllImport(\"kernel32.dll\")] public static extern bool SetConsoleMode(IntPtr h,uint m);';" +
+                "$h=[MK.Native]::GetStdHandle(-10);" +
+                "$null=[MK.Native]::SetConsoleMode($h,0x200);" +
                 "$e=[char]27;[Console]::Write($e+'[?2004h');" +
                 "$s=[Console]::OpenStandardInput();" +
                 "$b=New-Object byte[] 65536;" +
@@ -145,6 +150,8 @@ internal static class TerminalSmokeTest
                     25,
                     $"1 MB paste did not complete. ExpectedBytes={expectedPasteBytes}, " +
                     $"QueuedBytes={sessions[0].Connection.LastNativePasteBytes}, " +
+                    $"WrittenBytes={sessions[0].Connection.LastNativePasteWrittenBytes}, " +
+                    $"WriteMs={sessions[0].Connection.LastNativePasteWriteMilliseconds}, " +
                     $"Bracketed={sessions[0].Connection.LastNativePasteWasBracketed}. " +
                     Tail(sessions[0].Connection.GetCapturedOutput()));
             }
