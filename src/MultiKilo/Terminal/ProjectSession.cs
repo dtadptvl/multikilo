@@ -18,7 +18,7 @@ public sealed class ProjectSession
     private const string PwshCommand = "pwsh.exe -NoLogo -NoProfile -NoExit";
 
     private JobObject? _job;
-    private TermPTY? _term;
+    private BufferedTermPTY? _term;
     private Task? _termLifetimeTask;
     private int _generation;
 
@@ -46,7 +46,7 @@ public sealed class ProjectSession
 
         var generation = ++_generation;
         var job = new JobObject();
-        var term = new TermPTY(READ_BUFFER_SIZE: 1024 * 64);
+        var term = new BufferedTermPTY();
         var view = CreateTerminalView(term, Project.Folder);
         var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -124,6 +124,8 @@ public sealed class ProjectSession
         _term = null;
         _termLifetimeTask = null;
 
+        term?.CompleteInput();
+
         try
         {
             term?.CloseStdinToApp();
@@ -172,6 +174,7 @@ public sealed class ProjectSession
 
         await Application.Current.Dispatcher.InvokeAsync(() =>
         {
+            _term?.CompleteInput();
             _job?.Dispose();
             _job = null;
             _term = null;
@@ -184,6 +187,7 @@ public sealed class ProjectSession
     private async Task CleanupFailedStartAsync()
     {
         ++_generation;
+        _term?.CompleteInput();
 
         try
         {
