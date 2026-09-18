@@ -248,7 +248,9 @@ internal static class TerminalSmokeTest
                 return Fail(42, "PowerShell sessions did not become command-ready.");
             }
 
-            var keyboardCommand = "Write-Output 'MULTIKILO_KEYBOARD_OK'";
+            const string keyboardExecutedMarker = "MULTIKILO_KEYBOARD_EXECUTED";
+            var keyboardCommand =
+                "Write-Output ([string]::Concat('MULTIKILO_KEYBOARD_','EXECUTED'))";
             await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
             {
                 foreach (var ch in keyboardCommand)
@@ -260,6 +262,9 @@ internal static class TerminalSmokeTest
                         0);
                 }
 
+                // Match the Win32 message sequence delivered by the HwndHost.
+                // TerminalCore intentionally defers character-producing keydown
+                // events to the subsequent WM_CHAR.
                 const ushort VkReturn = 0x0D;
                 const ushort ReturnScanCode = 0x1C;
                 NativeMethods.TerminalSendKeyEvent(
@@ -268,6 +273,11 @@ internal static class TerminalSmokeTest
                     ReturnScanCode,
                     0,
                     true);
+                NativeMethods.TerminalSendCharEvent(
+                    sessions[0].Terminal.NativeTerminalForTesting,
+                    '\r',
+                    ReturnScanCode,
+                    0);
                 NativeMethods.TerminalSendKeyEvent(
                     sessions[0].Terminal.NativeTerminalForTesting,
                     VkReturn,
@@ -277,7 +287,7 @@ internal static class TerminalSmokeTest
             });
 
             if (!await WaitForConditionAsync(
-                    () => sessions[0].ContainsOutput("MULTIKILO_KEYBOARD_OK"),
+                    () => sessions[0].ContainsOutput(keyboardExecutedMarker),
                     TimeSpan.FromSeconds(8)))
             {
                 return Fail(36, "TerminalCore -> standard VT input -> ConPTY keyboard path failed.");
