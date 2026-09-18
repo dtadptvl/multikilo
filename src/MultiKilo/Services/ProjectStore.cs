@@ -22,7 +22,7 @@ public sealed class ProjectStore
 
         using var stream = File.OpenRead(FilePath);
         return JsonSerializer.Deserialize<List<ProjectDefinition>>(stream, JsonOptions)
-               ?? Array.Empty<ProjectDefinition>();
+               ?? new List<ProjectDefinition>();
     }
 
     public void Save(IEnumerable<ProjectDefinition> projects)

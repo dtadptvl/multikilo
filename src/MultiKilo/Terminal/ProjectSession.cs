@@ -15,6 +15,8 @@ public enum ProjectSessionState
 
 public sealed class ProjectSession
 {
+    private const string PwshCommand = "pwsh.exe -NoLogo -NoProfile -NoExit";
+
     private JobObject? _job;
     private TermPTY? _term;
     private Task? _termLifetimeTask;
@@ -45,8 +47,7 @@ public sealed class ProjectSession
         var generation = ++_generation;
         var job = new JobObject();
         var term = new TermPTY(READ_BUFFER_SIZE: 1024 * 64);
-        var command = BuildPwshCommand(continueSession);
-        var view = CreateTerminalView(term, Project.Folder, command);
+        var view = CreateTerminalView(term, Project.Folder);
         var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         term.TermReady += (_, _) => ready.TrySetResult();
@@ -60,7 +61,7 @@ public sealed class ProjectSession
             var factory = new JobAssigningProcessFactory(job);
             var lifetimeTask = Task.Run(() =>
                 term.Start(
-                    command,
+                    PwshCommand,
                     consoleWidth: 120,
                     consoleHeight: 32,
                     logOutput: false,
@@ -73,7 +74,7 @@ public sealed class ProjectSession
             if (first == lifetimeTask)
             {
                 await lifetimeTask;
-                throw new InvalidOperationException("Kilo exited before the terminal became ready.");
+                throw new InvalidOperationException("PowerShell exited before the terminal became ready.");
             }
 
             if (first != ready.Task)
@@ -82,6 +83,9 @@ public sealed class ProjectSession
             }
 
             await ready.Task;
+
+            var kilo = continueSession ? "kilo --auto --continue" : "kilo --auto";
+            term.WriteToTerm(kilo + "; exit\r");
 
             State = ProjectSessionState.Running;
             RaiseStateChanged();
@@ -209,13 +213,7 @@ public sealed class ProjectSession
         RaiseStateChanged();
     }
 
-    private static string BuildPwshCommand(bool continueSession)
-    {
-        var kilo = continueSession ? "kilo --auto --continue" : "kilo --auto";
-        return $"pwsh.exe -NoLogo -NoProfile -Command \"{kilo}\"";
-    }
-
-    private static EasyTerminalControl CreateTerminalView(TermPTY term, string workingDirectory, string command)
+    private static EasyTerminalControl CreateTerminalView(TermPTY term, string workingDirectory)
     {
         var theme = new TerminalTheme
         {
@@ -235,7 +233,7 @@ public sealed class ProjectSession
         return new EasyTerminalControl
         {
             ConPTYTerm = term,
-            StartupCommandLine = command,
+            StartupCommandLine = PwshCommand,
             WorkingDirectory = workingDirectory,
             Win32InputMode = true,
             InputCapture = EasyTerminalControl.INPUT_CAPTURE.TabKey |
