@@ -7,9 +7,15 @@ public partial class App : System.Windows.Application
 {
     private async void OnStartup(object sender, StartupEventArgs e)
     {
-        if (e.Args.Any(static x => string.Equals(x, "--smoke-test", StringComparison.OrdinalIgnoreCase)))
+        var smokeArgument = e.Args.FirstOrDefault(
+            static x => x.StartsWith("--smoke-test", StringComparison.OrdinalIgnoreCase));
+        if (smokeArgument is not null)
         {
-            var exitCode = await TerminalSmokeTest.RunAsync();
+            const string prefix = "--smoke-test=";
+            var mode = smokeArgument.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                ? smokeArgument[prefix.Length..]
+                : "all";
+            var exitCode = await TerminalSmokeTest.RunAsync(mode);
             Shutdown(exitCode);
             return;
         }

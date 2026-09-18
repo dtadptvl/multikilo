@@ -13,29 +13,41 @@ internal static class TerminalSmokeTest
     private const string PwshCommand = "pwsh.exe -NoLogo -NoProfile -NoExit";
     private const int WmMouseWheel = 0x020A;
 
-    public static async Task<int> RunAsync()
+    public static async Task<int> RunAsync(string mode = "all")
     {
         try
         {
-            var clipboardAndScroll = await VerifyNativeClipboardAndScrollAsync();
-            if (clipboardAndScroll != 0)
+            return mode.ToLowerInvariant() switch
             {
-                return clipboardAndScroll;
-            }
-
-            var paste = await VerifyNativeBracketedPasteAsync();
-            if (paste != 0)
-            {
-                return paste;
-            }
-
-            return await VerifyNativeSessionsAsync();
+                "clipboard" => await VerifyNativeClipboardAndScrollAsync(),
+                "paste" => await VerifyNativeBracketedPasteAsync(),
+                "sessions" => await VerifyNativeSessionsAsync(),
+                "all" => await RunAllAsync(),
+                _ => Fail(21, $"Unknown smoke-test mode: {mode}")
+            };
         }
         catch (Exception ex)
         {
             WriteFailure(ex.ToString());
             return 20;
         }
+    }
+
+    private static async Task<int> RunAllAsync()
+    {
+        var clipboardAndScroll = await VerifyNativeClipboardAndScrollAsync();
+        if (clipboardAndScroll != 0)
+        {
+            return clipboardAndScroll;
+        }
+
+        var paste = await VerifyNativeBracketedPasteAsync();
+        if (paste != 0)
+        {
+            return paste;
+        }
+
+        return await VerifyNativeSessionsAsync();
     }
 
     private static async Task<int> VerifyNativeClipboardAndScrollAsync()
