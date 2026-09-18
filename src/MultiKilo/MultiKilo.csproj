@@ -6,19 +6,38 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PlatformTarget>x64</PlatformTarget>
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <ApplicationIcon>Assets\MultiKilo.ico</ApplicationIcon>
     <AssemblyName>MultiKilo</AssemblyName>
     <RootNamespace>MultiKilo</RootNamespace>
+    <DefineConstants>$(DefineConstants);WPF</DefineConstants>
     <PublishTrimmed>false</PublishTrimmed>
     <PublishReadyToRun>false</PublishReadyToRun>
+    <PatchedTerminalDll>$(MSBuildThisFileDirectory)..\..\artifacts\terminal\win-x64\Microsoft.Terminal.Control.dll</PatchedTerminalDll>
   </PropertyGroup>
+
   <ItemGroup>
-    <PackageReference Include="EasyWindowsTerminalControl" Version="1.0.38" />
+    <PackageReference Include="Microsoft.Windows.Console.ConPTY" Version="1.24.260710001" />
+    <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.106">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <ProjectReference Include="..\TerminalWpfPatched\TerminalWpfPatched.csproj" />
   </ItemGroup>
+
   <ItemGroup>
+    <AdditionalFiles Include="ThirdParty\EasyWindowsTerminalControl\NativeMethods.txt" />
     <Resource Include="Assets\MultiKilo.ico" />
+    <None Include="$(PatchedTerminalDll)" Link="Microsoft.Terminal.Control.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
   </ItemGroup>
+
+  <Target Name="RequirePatchedTerminal" BeforeTargets="PrepareForBuild"
+          Condition="'$(DesignTimeBuild)' != 'true' and !Exists('$(PatchedTerminalDll)')">
+    <Error Text="Patched Microsoft.Terminal.Control.dll is missing. Run eng\windows-terminal\Build-PatchedTerminal.ps1 first." />
+  </Target>
 </Project>

@@ -6,8 +6,8 @@ on:
 
 jobs:
   build-test-publish:
-    runs-on: windows-latest
-    timeout-minutes: 20
+    runs-on: windows-2022
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -15,6 +15,10 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+
+      - name: Build patched Windows Terminal native control
+        shell: pwsh
+        run: .\eng\windows-terminal\Build-PatchedTerminal.ps1
 
       - name: Restore
         run: dotnet restore .\MultiKilo.sln
@@ -28,9 +32,9 @@ jobs:
           $exe = ".\src\MultiKilo\bin\x64\Release\net8.0-windows10.0.19041.0\win-x64\MultiKilo.exe"
           if (-not (Test-Path $exe)) { throw "Built MultiKilo.exe not found at $exe" }
           $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -PassThru
-          if (-not $process.WaitForExit(30000)) {
+          if (-not $process.WaitForExit(45000)) {
             $process.Kill($true)
-            throw "Smoke test timed out after 30 seconds"
+            throw "Smoke test timed out after 45 seconds"
           }
           if ($process.ExitCode -ne 0) {
             $log = Join-Path (Split-Path $exe) "smoke-error.txt"
@@ -40,13 +44,14 @@ jobs:
 
       - name: Publish portable x64 folder
         shell: pwsh
-        run: .\build.ps1
+        run: .\build.ps1 -SkipTerminalBuild
 
       - name: Inspect output
         shell: pwsh
         run: |
           $exe = ".\dist\MultiKilo-win-x64\MultiKilo.exe"
           if (-not (Test-Path $exe)) { throw "MultiKilo.exe was not published." }
+          if (-not (Test-Path ".\dist\MultiKilo-win-x64\Microsoft.Terminal.Control.dll")) { throw "Patched terminal DLL missing from portable output." }
           Get-ChildItem .\dist\MultiKilo-win-x64 -File | Sort-Object Name | Select-Object Name, Length | Format-Table -AutoSize
           $bytes = (Get-ChildItem .\dist\MultiKilo-win-x64 -Recurse -File | Measure-Object Length -Sum).Sum
           "Portable folder size: $([math]::Round($bytes / 1MB, 2)) MB"
