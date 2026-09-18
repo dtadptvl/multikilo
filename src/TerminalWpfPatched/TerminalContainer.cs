@@ -6,8 +6,6 @@
 namespace Microsoft.Terminal.Wpf
 {
     using System;
-    using System.Collections.Generic;
-    using System.Threading.Tasks;
     using System.Runtime.InteropServices;
     using System.Windows;
     using System.Windows.Automation.Peers;
@@ -22,12 +20,11 @@ namespace Microsoft.Terminal.Wpf
     /// </remarks>
     public class TerminalContainer : HwndHost
     {
-        private ITerminalConnection connection;
         private IntPtr hwnd;
         private IntPtr terminal;
         private NativeMethods.ScrollCallback scrollCallback;
-        private NativeMethods.WriteCallback writeCallback;
-        private readonly HashSet<ushort> suppressedShortcutKeys = new HashSet<ushort>();
+        private NativeMethods.SessionExitCallback sessionExitCallback;
+        private NativeMethods.SessionOutputCallback sessionOutputCallback;
         private readonly object terminalLifetimeLock = new object();
 
         /// <summary>
@@ -54,6 +51,9 @@ namespace Microsoft.Terminal.Wpf
         /// Event that is fired when the user engages in a mouse scroll over the terminal hwnd.
         /// </summary>
         internal event EventHandler<int> UserScrolled;
+
+        internal event Action<uint> SessionExited;
+        internal event Action<string> SessionOutputForTesting;
 
         /// <summary>
         /// Gets or sets a value indicating whether if the renderer should automatically resize to fill the control
@@ -86,43 +86,6 @@ namespace Microsoft.Terminal.Wpf
         /// Gets the window handle of the terminal.
         /// </summary>
         internal IntPtr Hwnd => this.hwnd;
-
-        /// <summary>
-        /// Sets the connection to the terminal backend.
-        /// </summary>
-        internal ITerminalConnection Connection
-        {
-            private get
-            {
-                return this.connection;
-            }
-
-            set
-            {
-                if (this.connection != null)
-                {
-                    this.connection.TerminalOutput -= this.Connection_TerminalOutput;
-                }
-
-                this.Connection_TerminalOutput(this, new TerminalOutputEventArgs("\x001bc\x1b]104\x1b\\")); // reset console/clear screen - https://github.com/microsoft/terminal/pull/15062#issuecomment-1505654110
-                var wasNull = this.connection == null;
-                this.connection = value;
-                if (this.connection != null)
-                {
-                    if (wasNull)
-                    {
-                        this.Connection_TerminalOutput(this, new TerminalOutputEventArgs("\x1b[?25h")); // show cursor
-                    }
-
-                    this.connection.TerminalOutput += this.Connection_TerminalOutput;
-                    this.connection.Start();
-                }
-                else
-                {
-                    this.Connection_TerminalOutput(this, new TerminalOutputEventArgs("\x1b[?25l")); // hide cursor
-                }
-            }
-        }
 
         /// <summary>
         /// Manually invoke a scroll of the terminal buffer.
@@ -188,7 +151,7 @@ namespace Microsoft.Terminal.Wpf
             this.Columns = dimensions.X;
             this.TerminalRendererSize = renderSize;
 
-            this.Connection?.Resize((uint)dimensions.Y, (uint)dimensions.X);
+            NativeMethods.TerminalResizeSession(this.terminal, (uint)dimensions.X, (uint)dimensions.Y);
         }
 
         /// <summary>
@@ -225,7 +188,30 @@ namespace Microsoft.Terminal.Wpf
                 Height = dimensionsInPixels.Y,
             };
 
-            this.Connection?.Resize((uint)dimensions.Y, (uint)dimensions.X);
+            NativeMethods.TerminalResizeSession(this.terminal, (uint)dimensions.X, (uint)dimensions.Y);
+        }
+
+        internal void StartSession(string commandLine, string workingDirectory)
+        {
+            var columns = (uint)Math.Max(1, this.Columns);
+            var rows = (uint)Math.Max(1, this.Rows);
+            NativeMethods.TerminalStartSession(this.terminal, commandLine, workingDirectory, columns, rows);
+        }
+
+        internal void TerminateSession() => NativeMethods.TerminalTerminateSession(this.terminal);
+
+        internal bool IsSessionRunning => NativeMethods.TerminalSessionIsRunning(this.terminal);
+
+        internal bool CopySelectionToClipboard() =>
+            this.terminal != IntPtr.Zero &&
+            NativeMethods.TerminalCopySelectionToClipboard(this.terminal);
+
+        internal void PasteFromClipboard()
+        {
+            if (this.terminal != IntPtr.Zero)
+            {
+                NativeMethods.TerminalPasteFromClipboard(this.terminal);
+            }
         }
 
         /// <summary>
@@ -249,7 +235,6 @@ namespace Microsoft.Terminal.Wpf
 
             if (this.Columns < columns || this.Rows < rows)
             {
-                this.connection?.Resize((uint)rows, (uint)columns);
             }
         }
 
@@ -293,10 +278,12 @@ namespace Microsoft.Terminal.Wpf
             NativeMethods.CreateTerminal(hwndParent.Handle, out this.hwnd, out this.terminal);
 
             this.scrollCallback = this.OnScroll;
-            this.writeCallback = this.OnWrite;
 
             NativeMethods.TerminalRegisterScrollCallback(this.terminal, this.scrollCallback);
-            NativeMethods.TerminalRegisterWriteCallback(this.terminal, this.writeCallback);
+            this.sessionExitCallback = this.OnNativeSessionExit;
+            this.sessionOutputCallback = this.OnNativeSessionOutput;
+            NativeMethods.TerminalRegisterSessionExitCallback(this.terminal, this.sessionExitCallback);
+            NativeMethods.TerminalRegisterSessionOutputCallback(this.terminal, this.sessionOutputCallback);
 
             // If the saved DPI scale isn't the default scale, we push it to the terminal.
             if (dpiScale.PixelsPerInchX != NativeMethods.USER_DEFAULT_SCREEN_DPI)
@@ -340,116 +327,6 @@ namespace Microsoft.Terminal.Wpf
             NativeMethods.SetFocus(this.hwnd);
         }
 
-        private enum ClipboardShortcutAction
-        {
-            PassThrough,
-            Suppress,
-            Copy,
-            Paste,
-        }
-
-        private bool TryHandleClipboardShortcut(ushort vkey)
-        {
-            const int VkControl = 0x11;
-            const int VkShift = 0x10;
-
-            var ctrl = (NativeMethods.GetKeyState(VkControl) & 0x8000) != 0;
-            var shift = (NativeMethods.GetKeyState(VkShift) & 0x8000) != 0;
-            var action = this.ClassifyClipboardShortcut(vkey, ctrl, shift);
-
-            switch (action)
-            {
-                case ClipboardShortcutAction.Copy:
-                    NativeMethods.TerminalCopySelectionToClipboard(this.terminal);
-                    this.suppressedShortcutKeys.Add(vkey);
-                    return true;
-
-                case ClipboardShortcutAction.Paste:
-                    this.PasteFromClipboardAsync();
-                    this.suppressedShortcutKeys.Add(vkey);
-                    return true;
-
-                case ClipboardShortcutAction.Suppress:
-                    this.suppressedShortcutKeys.Add(vkey);
-                    return true;
-
-                default:
-                    return false;
-            }
-        }
-
-        private ClipboardShortcutAction ClassifyClipboardShortcut(
-            ushort vkey,
-            bool ctrl,
-            bool shift)
-        {
-            const ushort VkInsert = 0x2D;
-            const ushort VkC = 0x43;
-            const ushort VkV = 0x56;
-
-            if ((ctrl && shift && vkey == VkC) ||
-                (ctrl && !shift && vkey == VkInsert))
-            {
-                return ClipboardShortcutAction.Copy;
-            }
-
-            if ((ctrl && shift && vkey == VkV) ||
-                (!ctrl && shift && vkey == VkInsert))
-            {
-                return NativeMethods.TerminalClipboardContainsText()
-                    ? ClipboardShortcutAction.Paste
-                    : ClipboardShortcutAction.Suppress;
-            }
-
-            if (ctrl && !shift && vkey == VkV)
-            {
-                // Kilo owns Ctrl+V when the clipboard carries an image. This
-                // preserves Kilo's native image-paste behavior.
-                if (NativeMethods.TerminalClipboardContainsImage())
-                {
-                    return ClipboardShortcutAction.PassThrough;
-                }
-
-                if (NativeMethods.TerminalClipboardContainsText())
-                {
-                    return ClipboardShortcutAction.Paste;
-                }
-            }
-
-            // Ctrl+C without Shift remains application input (interrupt/cancel).
-            return ClipboardShortcutAction.PassThrough;
-        }
-
-        internal bool ClipboardShortcutPassesThroughForTesting(
-            ushort vkey,
-            bool ctrl,
-            bool shift) =>
-            this.ClassifyClipboardShortcut(vkey, ctrl, shift) ==
-            ClipboardShortcutAction.PassThrough;
-
-        private bool ShouldSuppressClipboardShortcutChar(char character)
-        {
-            const ushort VkC = 0x43;
-            const ushort VkV = 0x56;
-
-            return (character == '\x03' && this.suppressedShortcutKeys.Contains(VkC)) ||
-                   (character == '\x16' && this.suppressedShortcutKeys.Contains(VkV));
-        }
-
-        private void PasteFromClipboardAsync()
-        {
-            Task.Run(() =>
-            {
-                lock (this.terminalLifetimeLock)
-                {
-                    if (this.terminal != IntPtr.Zero)
-                    {
-                        NativeMethods.TerminalPasteFromClipboard(this.terminal);
-                    }
-                }
-            });
-        }
-
         internal IntPtr NativeTerminalForTesting => this.terminal;
         internal IntPtr NativeHwndForTesting => this.hwnd;
 
@@ -473,12 +350,6 @@ namespace Microsoft.Terminal.Wpf
                     case NativeMethods.WindowMessage.WM_KEYDOWN:
                         {
                             UnpackKeyMessage(wParam, lParam, out ushort vkey, out ushort scanCode, out ushort flags);
-                            if (this.TryHandleClipboardShortcut(vkey))
-                            {
-                                handled = true;
-                                break;
-                            }
-
                             NativeMethods.TerminalSendKeyEvent(this.terminal, vkey, scanCode, flags, true);
                             break;
                         }
@@ -488,12 +359,6 @@ namespace Microsoft.Terminal.Wpf
                         {
                             // WM_KEYUP lParam layout documentation: https://docs.microsoft.com/en-us/windows/win32/inputdev/wm-keyup
                             UnpackKeyMessage(wParam, lParam, out ushort vkey, out ushort scanCode, out ushort flags);
-                            if (this.suppressedShortcutKeys.Remove(vkey))
-                            {
-                                handled = true;
-                                break;
-                            }
-
                             NativeMethods.TerminalSendKeyEvent(this.terminal, (ushort)wParam, scanCode, flags, false);
                             break;
                         }
@@ -502,12 +367,6 @@ namespace Microsoft.Terminal.Wpf
                         {
                             // WM_CHAR lParam layout documentation: https://docs.microsoft.com/en-us/windows/win32/inputdev/wm-char
                             UnpackCharMessage(wParam, lParam, out char character, out ushort scanCode, out ushort flags);
-                            if (this.ShouldSuppressClipboardShortcutChar(character))
-                            {
-                                handled = true;
-                                break;
-                            }
-
                             NativeMethods.TerminalSendCharEvent(this.terminal, character, scanCode, flags);
                             break;
                         }
@@ -541,7 +400,7 @@ namespace Microsoft.Terminal.Wpf
                             NativeMethods.TerminalCalculateResize(this.terminal, (int)this.TerminalControlSize.Width, (int)this.TerminalControlSize.Height, out dimensions);
                         }
 
-                        this.Connection?.Resize((uint)dimensions.Y, (uint)dimensions.X);
+                        NativeMethods.TerminalResizeSession(this.terminal, (uint)dimensions.X, (uint)dimensions.Y);
                         break;
 
                     case NativeMethods.WindowMessage.WM_MOUSEWHEEL:
@@ -554,24 +413,19 @@ namespace Microsoft.Terminal.Wpf
             return IntPtr.Zero;
         }
 
-        private void Connection_TerminalOutput(object sender, TerminalOutputEventArgs e)
-        {
-            if (this.terminal == IntPtr.Zero || string.IsNullOrEmpty(e.Data))
-            {
-                return;
-            }
-
-            NativeMethods.TerminalSendOutput(this.terminal, e.Data);
-        }
-
         private void OnScroll(int viewTop, int viewHeight, int bufferSize)
         {
             this.TerminalScrolled?.Invoke(this, (viewTop, viewHeight, bufferSize));
         }
 
-        private void OnWrite(string data)
+        private void OnNativeSessionExit(uint exitCode)
         {
-            this.Connection?.WriteInput(data);
+            this.Dispatcher.BeginInvoke(new Action(() => this.SessionExited?.Invoke(exitCode)));
+        }
+
+        private void OnNativeSessionOutput(string data)
+        {
+            this.SessionOutputForTesting?.Invoke(data);
         }
     }
 }

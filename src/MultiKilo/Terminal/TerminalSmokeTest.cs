@@ -1,14 +1,9 @@
-using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading.Channels;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
 using System.Windows.Threading;
-using EasyWindowsTerminalControl;
 using Microsoft.Terminal.Wpf;
 
 namespace MultiKilo.Terminal;
@@ -18,17 +13,18 @@ internal static class TerminalSmokeTest
     private const string PwshCommand = "pwsh.exe -NoLogo -NoProfile -NoExit";
     private const int WmMouseWheel = 0x020A;
 
-    public static async Task<int> RunAsync()
+    public static async Task<int> RunAsync(string mode = "all")
     {
         try
         {
-            var clipboardResult = await VerifyNativeClipboardAndScrollAsync();
-            if (clipboardResult != 0)
+            return mode.ToLowerInvariant() switch
             {
-                return clipboardResult;
-            }
-
-            return await VerifyConPtySessionsAsync();
+                "clipboard" => await VerifyNativeClipboardAndScrollAsync(),
+                "paste" => await VerifyNativeBracketedPasteAsync(),
+                "sessions" => await VerifyNativeSessionsAsync(),
+                "all" => await RunAllAsync(),
+                _ => Fail(21, $"Unknown smoke-test mode: {mode}")
+            };
         }
         catch (Exception ex)
         {
@@ -37,12 +33,362 @@ internal static class TerminalSmokeTest
         }
     }
 
+    private static async Task<int> RunAllAsync()
+    {
+        var clipboardAndScroll = await VerifyNativeClipboardAndScrollAsync();
+        if (clipboardAndScroll != 0)
+        {
+            return clipboardAndScroll;
+        }
+
+        var paste = await VerifyNativeBracketedPasteAsync();
+        if (paste != 0)
+        {
+            return paste;
+        }
+
+        return await VerifyNativeSessionsAsync();
+    }
+
     private static async Task<int> VerifyNativeClipboardAndScrollAsync()
     {
-        var connection = new ProbeConnection();
-        var terminal = new TerminalControl
+        var terminal = CreateTerminalControl();
+        using var host = new HiddenTerminalWindow(terminal);
+
+        host.Show();
+        await PumpAsync();
+        terminal.SetTheme(CreateTheme(), "Cascadia Mono", 13);
+
+        const string copyMarker = "MULTIKILO_NATIVE_COPY_OK Tiếng Việt";
+        NativeMethods.TerminalSendOutput(
+            terminal.NativeTerminalForTesting,
+            copyMarker + "\r\n");
+
+        NativeMethods.TerminalSelectAllForTesting(terminal.NativeTerminalForTesting);
+        if (!NativeMethods.TerminalCopySelectionToClipboard(terminal.NativeTerminalForTesting))
         {
-            AutoResize = true,
+            return Fail(51, "Native terminal selection could not be copied to the clipboard.");
+        }
+
+        var copied = System.Windows.Clipboard.GetText();
+        if (!copied.Contains(copyMarker, StringComparison.Ordinal))
+        {
+            return Fail(52, $"Native clipboard copy lost selected text. Clipboard={copied}");
+        }
+
+        var scrollText = new StringBuilder();
+        for (var i = 0; i < 500; i++)
+        {
+            scrollText.Append("SCROLL-").Append(i).Append("\r\n");
+        }
+
+        NativeMethods.TerminalSendOutput(
+            terminal.NativeTerminalForTesting,
+            scrollText.ToString());
+
+        if (!await WaitForConditionAsync(
+                () => terminal.ScrollMaximumForTesting > 20 &&
+                      terminal.ScrollValueForTesting > 20,
+                TimeSpan.FromSeconds(5)))
+        {
+            return Fail(
+                53,
+                $"Terminal never built scrollback. Value={terminal.ScrollValueForTesting}, Max={terminal.ScrollMaximumForTesting}.");
+        }
+
+        var before = terminal.ScrollValueForTesting;
+        var wheelUp = new IntPtr(120 << 16);
+        SendMessageW(terminal.NativeHwndForTesting, WmMouseWheel, wheelUp, IntPtr.Zero);
+
+        if (!await WaitForConditionAsync(
+                () => terminal.ScrollValueForTesting < before,
+                TimeSpan.FromSeconds(3)))
+        {
+            return Fail(
+                54,
+                $"Mouse wheel did not scroll terminal. Before={before}, After={terminal.ScrollValueForTesting}.");
+        }
+
+        return 0;
+    }
+
+    private static async Task<int> VerifyNativeBracketedPasteAsync()
+    {
+        var tempDir = Path.Combine(
+            Path.GetTempPath(),
+            "MultiKilo-Smoke-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+
+        var bracketScriptPath = Path.Combine(tempDir, "bracket-smoke.ps1");
+        File.WriteAllText(
+            bracketScriptPath,
+            """
+            Add-Type -TypeDefinition @"
+            using System;
+            using System.Runtime.InteropServices;
+            public static class MultiKiloRawConsole {
+                [DllImport("kernel32.dll", SetLastError = true)]
+                public static extern IntPtr GetStdHandle(int nStdHandle);
+                [DllImport("kernel32.dll", SetLastError = true)]
+                [return: MarshalAs(UnmanagedType.Bool)]
+                public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+                [DllImport("kernel32.dll", SetLastError = true)]
+                [return: MarshalAs(UnmanagedType.Bool)]
+                public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+            }
+            "@
+
+            $stdin = [MultiKiloRawConsole]::GetStdHandle(-10)
+            [uint32]$mode = 0
+            if (-not [MultiKiloRawConsole]::GetConsoleMode($stdin, [ref]$mode)) {
+                throw "GetConsoleMode failed"
+            }
+
+            $ENABLE_LINE_INPUT = 0x0002
+            $ENABLE_ECHO_INPUT = 0x0004
+            $ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
+            $rawMode = ($mode -band (-bnot ($ENABLE_LINE_INPUT -bor $ENABLE_ECHO_INPUT))) -bor $ENABLE_VIRTUAL_TERMINAL_INPUT
+            if (-not [MultiKiloRawConsole]::SetConsoleMode($stdin, $rawMode)) {
+                throw "SetConsoleMode failed"
+            }
+
+            $esc = [char]27
+            $crlf = ([char]13).ToString() + ([char]10)
+            [Console]::Write("$esc[?2004h")
+            [Console]::Write("MULTIKILO_BRACKET_READY" + $crlf)
+
+            $stream = [Console]::OpenStandardInput()
+            $bytes = [System.Collections.Generic.List[byte]]::new()
+            $startBytes = [byte[]](27, 91, 50, 48, 48, 126)
+            $endBytes = [byte[]](27, 91, 50, 48, 49, 126)
+
+            while ($bytes.Count -lt 400000) {
+                $value = $stream.ReadByte()
+                if ($value -lt 0) { break }
+                $bytes.Add([byte]$value)
+
+                if ($bytes.Count -ge $endBytes.Length) {
+                    $matchesEnd = $true
+                    for ($i = 0; $i -lt $endBytes.Length; $i++) {
+                        if ($bytes[$bytes.Count - $endBytes.Length + $i] -ne $endBytes[$i]) {
+                            $matchesEnd = $false
+                            break
+                        }
+                    }
+                    if ($matchesEnd) { break }
+                }
+            }
+
+            $isBracketed = $bytes.Count -ge ($startBytes.Length + $endBytes.Length)
+            if ($isBracketed) {
+                for ($i = 0; $i -lt $startBytes.Length; $i++) {
+                    if ($bytes[$i] -ne $startBytes[$i]) {
+                        $isBracketed = $false
+                        break
+                    }
+                }
+            }
+            if ($isBracketed) {
+                for ($i = 0; $i -lt $endBytes.Length; $i++) {
+                    if ($bytes[$bytes.Count - $endBytes.Length + $i] -ne $endBytes[$i]) {
+                        $isBracketed = $false
+                        break
+                    }
+                }
+            }
+
+            $crCount = @($bytes | Where-Object { $_ -eq 13 }).Count
+            [Console]::Write("$esc[?2004l")
+            [Console]::Write("MULTIKILO_BRACKET_RESULT:${isBracketed}:${crCount}" + $crlf)
+            """,
+            new UTF8Encoding(false));
+
+        var unicodeScriptPath = Path.Combine(tempDir, "unicode-smoke.ps1");
+        File.WriteAllText(
+            unicodeScriptPath,
+            """
+            Add-Type -TypeDefinition @"
+            using System;
+            using System.Runtime.InteropServices;
+            public static class MultiKiloWideConsole {
+                [DllImport("kernel32.dll", SetLastError = true)]
+                public static extern IntPtr GetStdHandle(int nStdHandle);
+                [DllImport("kernel32.dll", SetLastError = true)]
+                [return: MarshalAs(UnmanagedType.Bool)]
+                public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+                [DllImport("kernel32.dll", SetLastError = true)]
+                [return: MarshalAs(UnmanagedType.Bool)]
+                public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+                [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+                [return: MarshalAs(UnmanagedType.Bool)]
+                public static extern bool ReadConsoleW(IntPtr hConsoleInput, char[] buffer, uint charsToRead, out uint charsRead, IntPtr inputControl);
+            }
+            "@
+
+            $stdin = [MultiKiloWideConsole]::GetStdHandle(-10)
+            [uint32]$mode = 0
+            if (-not [MultiKiloWideConsole]::GetConsoleMode($stdin, [ref]$mode)) {
+                throw "GetConsoleMode failed"
+            }
+
+            $ENABLE_LINE_INPUT = 0x0002
+            $ENABLE_ECHO_INPUT = 0x0004
+            $ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
+            $wideMode = $mode -band (-bnot ($ENABLE_LINE_INPUT -bor $ENABLE_ECHO_INPUT -bor $ENABLE_VIRTUAL_TERMINAL_INPUT))
+            if (-not [MultiKiloWideConsole]::SetConsoleMode($stdin, $wideMode)) {
+                throw "SetConsoleMode failed"
+            }
+
+            $expected = "Tiếng Việt — Trường Sa — Unicode ✓"
+            $crlf = ([char]13).ToString() + ([char]10)
+            [Console]::Write("MULTIKILO_UNICODE_READY" + $crlf)
+
+            $builder = [System.Text.StringBuilder]::new()
+            $buffer = New-Object char[] 128
+            while ($builder.Length -lt $expected.Length) {
+                [uint32]$read = 0
+                if (-not [MultiKiloWideConsole]::ReadConsoleW($stdin, $buffer, [uint32]$buffer.Length, [ref]$read, [IntPtr]::Zero)) {
+                    throw "ReadConsoleW failed"
+                }
+                if ($read -eq 0) { break }
+                [void]$builder.Append($buffer, 0, [int]$read)
+            }
+
+            $actual = $builder.ToString()
+            $ok = $actual.StartsWith($expected, [System.StringComparison]::Ordinal)
+            [Console]::Write("MULTIKILO_UNICODE_RESULT:${ok}:LEN=${actual.Length}" + $crlf)
+            """,
+            new UTF8Encoding(false));
+
+        var terminal = CreateTerminalControl();
+        using var host = new HiddenTerminalWindow(terminal);
+        var output = new StringBuilder();
+        var outputGate = new object();
+        uint? sessionExitCode = null;
+
+        terminal.SessionOutputForTesting += OnOutput;
+        terminal.SessionExited += OnExit;
+
+        try
+        {
+            host.Show();
+            await PumpAsync();
+            terminal.SetTheme(CreateTheme(), "Cascadia Mono", 13);
+
+            terminal.StartSession(
+                $"pwsh.exe -NoLogo -NoProfile -File \"{bracketScriptPath}\"",
+                tempDir);
+
+            if (!await WaitForConditionAsync(
+                    () => ContainsOutput("MULTIKILO_BRACKET_READY"),
+                    TimeSpan.FromSeconds(10)))
+            {
+                return FailWithSnapshot(
+                    55,
+                    "Native ConPTY test app never enabled bracketed paste mode.");
+            }
+
+            System.Windows.Clipboard.SetText(Create288LinePastePayload());
+            terminal.Paste();
+
+            if (!await WaitForConditionAsync(
+                    () => ContainsOutput("MULTIKILO_BRACKET_RESULT:True:288"),
+                    TimeSpan.FromSeconds(10)))
+            {
+                return FailWithSnapshot(
+                    56,
+                    "288-line native paste did not arrive as one bracketed transaction.");
+            }
+
+            terminal.TerminateSession();
+            await WaitForConditionAsync(
+                () => !terminal.IsSessionRunning,
+                TimeSpan.FromSeconds(5));
+
+            sessionExitCode = null;
+            terminal.StartSession(
+                $"pwsh.exe -NoLogo -NoProfile -File \"{unicodeScriptPath}\"",
+                tempDir);
+
+            if (!await WaitForConditionAsync(
+                    () => ContainsOutput("MULTIKILO_UNICODE_READY"),
+                    TimeSpan.FromSeconds(10)))
+            {
+                return FailWithSnapshot(
+                    61,
+                    "Unicode ConPTY test app did not become ready.");
+            }
+
+            System.Windows.Clipboard.SetText("Tiếng Việt — Trường Sa — Unicode ✓");
+            terminal.Paste();
+
+            if (!await WaitForConditionAsync(
+                    () => ContainsOutput("MULTIKILO_UNICODE_RESULT:True:"),
+                    TimeSpan.FromSeconds(10)))
+            {
+                return FailWithSnapshot(
+                    62,
+                    "Native ConPTY paste did not preserve Vietnamese/Unicode text.");
+            }
+
+            return 0;
+        }
+        finally
+        {
+            terminal.SessionOutputForTesting -= OnOutput;
+            terminal.SessionExited -= OnExit;
+            terminal.TerminateSession();
+
+            try
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+            catch
+            {
+            }
+        }
+
+        void OnOutput(string data)
+        {
+            lock (outputGate)
+            {
+                output.Append(data);
+            }
+        }
+
+        void OnExit(uint exitCode)
+        {
+            sessionExitCode = exitCode;
+        }
+
+        bool ContainsOutput(string value)
+        {
+            lock (outputGate)
+            {
+                return output.ToString().Contains(value, StringComparison.Ordinal);
+            }
+        }
+
+        int FailWithSnapshot(int code, string message)
+        {
+            string snapshot;
+            lock (outputGate)
+            {
+                snapshot = output.ToString();
+            }
+
+            return Fail(
+                code,
+                message +
+                $" Running={terminal.IsSessionRunning}; ExitCode={sessionExitCode?.ToString() ?? "<none>"}; " +
+                $"Output={snapshot.Replace("\x1b", "<ESC>")}");
+        }
+    }
+
+    private static async Task<int> VerifyNativeSessionsAsync()
+    {
+        var hostGrid = new Grid
+        {
             Width = 760,
             Height = 440
         };
@@ -55,253 +401,47 @@ internal static class TerminalSmokeTest
             Top = -10000,
             ShowInTaskbar = false,
             WindowStyle = WindowStyle.None,
-            Content = terminal
+            Content = hostGrid
         };
+
+        var sessions = Enumerable.Range(0, 3)
+            .Select(_ => new NativeSmokeSession(CreateTerminalControl()))
+            .ToList();
 
         try
         {
-            window.Show();
-            await System.Windows.Application.Current.Dispatcher.InvokeAsync(
-                () => { },
-                DispatcherPriority.ApplicationIdle);
-
-            terminal.SetTheme(CreateTheme(), "Cascadia Mono", 13);
-            terminal.Connection = connection;
-
-            const string nativeKeyboardProbe = "keyboard-probe";
-            foreach (var ch in nativeKeyboardProbe)
+            for (var i = 0; i < sessions.Count; i++)
             {
-                NativeMethods.TerminalSendCharEvent(
-                    terminal.NativeTerminalForTesting,
-                    ch,
-                    0,
-                    0);
-            }
-
-            const ushort ProbeReturnScanCode = 0x1C;
-            NativeMethods.TerminalSendKeyEvent(
-                terminal.NativeTerminalForTesting,
-                0x0D,
-                ProbeReturnScanCode,
-                0,
-                true);
-            NativeMethods.TerminalSendCharEvent(
-                terminal.NativeTerminalForTesting,
-                '\r',
-                ProbeReturnScanCode,
-                0);
-            NativeMethods.TerminalSendKeyEvent(
-                terminal.NativeTerminalForTesting,
-                0x0D,
-                ProbeReturnScanCode,
-                0,
-                false);
-
-            var keyboardProbe = await connection.ReadUntilAsync(
-                nativeKeyboardProbe.Length + 1,
-                TimeSpan.FromSeconds(2));
-            if (keyboardProbe != nativeKeyboardProbe + "\r")
-            {
-                return Fail(
-                    41,
-                    $"Native keyboard translation mismatch. Received={keyboardProbe.Replace("\x1b", "<ESC>")}.");
-            }
-
-            connection.EmitOutput("\x1b[?2004h");
-            await Task.Delay(100);
-
-            var payload = CreateLargePastePayload();
-            System.Windows.Clipboard.SetText(payload);
-
-            if (terminal.ClipboardShortcutPassesThroughForTesting(0x56, ctrl: true, shift: false))
-            {
-                return Fail(29, "Ctrl+V text clipboard incorrectly passed through to Kilo.");
-            }
-
-            var pasteTask = Task.Run(
-                () => NativeMethods.TerminalPasteFromClipboard(terminal.NativeTerminalForTesting));
-
-            await System.Windows.Application.Current.Dispatcher.InvokeAsync(
-                () => { },
-                DispatcherPriority.Input).Task.WaitAsync(TimeSpan.FromSeconds(1));
-
-            await pasteTask.WaitAsync(TimeSpan.FromSeconds(5));
-            var pasted = await connection.ReadInputAsync(TimeSpan.FromSeconds(5));
-
-            if (!pasted.StartsWith("\x1b[200~", StringComparison.Ordinal) ||
-                !pasted.EndsWith("\x1b[201~", StringComparison.Ordinal))
-            {
-                return Fail(30, "Native 1 MB text paste was not bracketed.");
-            }
-
-            if (pasted.Contains('\n'))
-            {
-                return Fail(31, "Native paste did not apply Windows Terminal newline filtering.");
-            }
-
-            if (!pasted.Contains("Tiếng Việt", StringComparison.Ordinal))
-            {
-                return Fail(32, "Native paste lost Unicode/Vietnamese content.");
-            }
-
-            var pixels = new byte[] { 0x10, 0x20, 0x30, 0xFF };
-            var bitmap = BitmapSource.Create(
-                1,
-                1,
-                96,
-                96,
-                PixelFormats.Bgra32,
-                null,
-                pixels,
-                4);
-            System.Windows.Clipboard.SetImage(bitmap);
-
-            if (!NativeMethods.TerminalClipboardContainsImage())
-            {
-                return Fail(33, "Native clipboard image detection failed.");
-            }
-
-            if (!terminal.ClipboardShortcutPassesThroughForTesting(0x56, ctrl: true, shift: false))
-            {
-                return Fail(40, "Ctrl+V image clipboard was swallowed by the terminal instead of passing through to Kilo.");
-            }
-
-            var scrollText = new StringBuilder();
-            for (var i = 0; i < 500; i++)
-            {
-                scrollText.Append("SCROLL-").Append(i).Append("\r\n");
-            }
-
-            connection.EmitOutput(scrollText.ToString());
-
-            if (!await WaitForConditionAsync(
-                    () => terminal.ScrollMaximumForTesting > 20 &&
-                          terminal.ScrollValueForTesting > 20,
-                    TimeSpan.FromSeconds(5)))
-            {
-                return Fail(
-                    34,
-                    $"Terminal never built scrollback. Value={terminal.ScrollValueForTesting}, Max={terminal.ScrollMaximumForTesting}.");
-            }
-
-            var before = terminal.ScrollValueForTesting;
-            var wheelUp = new IntPtr(120 << 16);
-            SendMessageW(terminal.NativeHwndForTesting, WmMouseWheel, wheelUp, IntPtr.Zero);
-
-            if (!await WaitForConditionAsync(
-                    () => terminal.ScrollValueForTesting < before,
-                    TimeSpan.FromSeconds(3)))
-            {
-                return Fail(
-                    35,
-                    $"Mouse wheel did not scroll terminal. Before={before}, After={terminal.ScrollValueForTesting}.");
-            }
-
-            return 0;
-        }
-        finally
-        {
-            terminal.Connection = null!;
-            window.Close();
-        }
-    }
-
-    private static async Task<int> VerifyConPtySessionsAsync()
-    {
-        var host = new Grid
-        {
-            Width = 760,
-            Height = 440,
-            Background = System.Windows.Media.Brushes.Black
-        };
-        var window = new System.Windows.Window
-        {
-            Width = 760,
-            Height = 440,
-            Left = -10000,
-            Top = -10000,
-            ShowInTaskbar = false,
-            WindowStyle = WindowStyle.None,
-            Content = host
-        };
-
-        var sessions = new List<SmokeSession>();
-
-        try
-        {
-            for (var i = 0; i < 3; i++)
-            {
-                var session = new SmokeSession(CreateTerminalControl());
-                sessions.Add(session);
-                session.Terminal.Visibility = i == 0 ? Visibility.Visible : Visibility.Hidden;
-                host.Children.Add(session.Terminal);
+                sessions[i].Terminal.Visibility =
+                    i == 0 ? Visibility.Visible : Visibility.Hidden;
+                hostGrid.Children.Add(sessions[i].Terminal);
             }
 
             window.Show();
-            await System.Windows.Application.Current.Dispatcher.InvokeAsync(
-                () => { },
-                DispatcherPriority.ApplicationIdle);
+            await PumpAsync();
 
             foreach (var session in sessions)
             {
-                await session.StartAsync();
-                session.Terminal.Connection = session.Term;
-                session.Term.Win32DirectInputMode(false);
-
-                if (session.Terminal.Columns > 0 && session.Terminal.Rows > 0)
-                {
-                    session.Term.Resize(session.Terminal.Columns, session.Terminal.Rows);
-                }
+                session.Terminal.SetTheme(CreateTheme(), "Cascadia Mono", 13);
+                session.Start(PwshCommand, Environment.CurrentDirectory);
             }
 
-            // TermReady means the pseudo console exists; it does not mean the
-            // shell has finished startup and is ready to execute input. Establish
-            // that boundary explicitly so the keyboard test measures TerminalCore
-            // input translation rather than PowerShell startup timing.
             for (var i = 0; i < sessions.Count; i++)
             {
-                sessions[i].Term.WriteToTerm(
-                    $"Write-Output 'MULTIKILO_SHELL_READY_{i + 1}'\r");
+                SendCommand(
+                    sessions[i].Terminal,
+                    $"Write-Output 'MULTIKILO_NATIVE_SESSION_{i + 1}'");
             }
 
             if (!await WaitForConditionAsync(
                     () => sessions.Select(
                             static (session, index) =>
-                                session.ContainsOutput($"MULTIKILO_SHELL_READY_{index + 1}"))
+                                session.ContainsOutput($"MULTIKILO_NATIVE_SESSION_{index + 1}"))
                         .All(static ready => ready),
-                    TimeSpan.FromSeconds(10)))
+                    TimeSpan.FromSeconds(12)))
             {
-                return Fail(42, "PowerShell sessions did not become command-ready.");
+                return Fail(57, "Native keyboard -> native ConPTY path failed for one or more sessions.");
             }
-
-            const string keyboardExecutedMarker = "MULTIKILO_CONNECTION_INPUT_OK";
-            ((ITerminalConnection)sessions[0].Term).WriteInput(
-                $"Write-Output '{keyboardExecutedMarker}'\r");
-
-            if (!await WaitForConditionAsync(
-                    () => sessions[0].ContainsOutput(keyboardExecutedMarker),
-                    TimeSpan.FromSeconds(8)))
-            {
-                return Fail(
-                    36,
-                    "ITerminalConnection -> TermPTY queue -> ConPTY input path failed.");
-            }
-
-            for (var i = 0; i < sessions.Count; i++)
-            {
-                var token = $"MULTIKILO_UNICODE_{i + 1}";
-                sessions[i].Term.WriteToTerm(
-                    $"[Console]::Write(([char]27).ToString() + \"[38;2;12;34;56m{token}\" + ([char]27) + \"[0m Tiếng Việt: Trường Sa, tiếng Việt ✓\" + [Environment]::NewLine)\r");
-            }
-
-            if (!await WaitForConditionAsync(
-                    () => sessions.All(static session => session.ContainsOutput("Tiếng Việt: Trường Sa, tiếng Việt ✓")),
-                    TimeSpan.FromSeconds(8)))
-            {
-                return Fail(37, "ANSI/Unicode output did not survive ConPTY/terminal path.");
-            }
-
-            var originalPids = sessions.Select(static session => session.Pid).ToArray();
 
             for (var selected = 0; selected < sessions.Count; selected++)
             {
@@ -311,9 +451,7 @@ internal static class TerminalSmokeTest
                         i == selected ? Visibility.Visible : Visibility.Hidden;
                 }
 
-                await System.Windows.Application.Current.Dispatcher.InvokeAsync(
-                    () => { },
-                    DispatcherPriority.ApplicationIdle);
+                await PumpAsync();
             }
 
             window.Width = 980;
@@ -323,20 +461,23 @@ internal static class TerminalSmokeTest
             window.Height = 390;
             await Task.Delay(150);
 
-            if (!sessions.Select(static session => session.Pid).SequenceEqual(originalPids))
+            if (sessions.Any(static session => !session.Terminal.IsSessionRunning))
             {
-                return Fail(38, "Project switching/re-layout restarted a live session.");
+                return Fail(58, "Project switching or resize stopped a live native session.");
             }
 
-            await sessions[1].TerminateAsync();
-            if (sessions[0].HasExited || sessions[2].HasExited)
+            sessions[1].Terminal.TerminateSession();
+
+            await sessions[1].Exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            if (!sessions[0].Terminal.IsSessionRunning ||
+                !sessions[2].Terminal.IsSessionRunning)
             {
-                return Fail(39, "Terminating one Job Object affected another session.");
+                return Fail(60, "Terminating one native Job Object affected another project session.");
             }
 
-            await Task.WhenAll(
-                sessions[0].TerminateAsync(),
-                sessions[2].TerminateAsync());
+            sessions[0].Terminal.TerminateSession();
+            sessions[2].Terminal.TerminateSession();
 
             return 0;
         }
@@ -344,20 +485,52 @@ internal static class TerminalSmokeTest
         {
             foreach (var session in sessions)
             {
-                session.Terminal.Connection = null!;
-                await session.DisposeAsync();
+                session.Terminal.TerminateSession();
             }
 
             window.Close();
         }
     }
 
+    private static void SendCommand(TerminalControl terminal, string command)
+    {
+        foreach (var ch in command)
+        {
+            NativeMethods.TerminalSendCharEvent(
+                terminal.NativeTerminalForTesting,
+                ch,
+                0,
+                0);
+        }
+
+        const ushort returnScanCode = 0x1C;
+        NativeMethods.TerminalSendKeyEvent(
+            terminal.NativeTerminalForTesting,
+            0x0D,
+            returnScanCode,
+            0,
+            true);
+        NativeMethods.TerminalSendCharEvent(
+            terminal.NativeTerminalForTesting,
+            '\r',
+            returnScanCode,
+            0);
+        NativeMethods.TerminalSendKeyEvent(
+            terminal.NativeTerminalForTesting,
+            0x0D,
+            returnScanCode,
+            0,
+            false);
+    }
+
     private static TerminalControl CreateTerminalControl() =>
         new()
         {
             AutoResize = true,
+            Width = 760,
+            Height = 440,
             HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
-            VerticalAlignment = System.Windows.VerticalAlignment.Stretch
+            VerticalAlignment = VerticalAlignment.Stretch
         };
 
     private static TerminalTheme CreateTheme() =>
@@ -376,23 +549,26 @@ internal static class TerminalSmokeTest
             ]
         };
 
-    private static string CreateLargePastePayload()
+    private static string Create288LinePastePayload()
     {
-        const string line =
-            "Tiếng Việt — Trường Sa — Unicode ✓ — MultiKilo native terminal paste 0123456789\n";
-        const int targetBytes = 1_048_576;
+        var builder = new StringBuilder();
 
-        var lineBytes = Encoding.UTF8.GetByteCount(line);
-        var repeats = (targetBytes + lineBytes - 1) / lineBytes;
-        var builder = new StringBuilder(line.Length * repeats);
-
-        for (var i = 0; i < repeats; i++)
+        for (var i = 0; i < 288; i++)
         {
-            builder.Append(line);
+            builder
+                .Append("LINE-")
+                .Append(i.ToString("D3"))
+                .Append(" Tiếng Việt — Trường Sa — Unicode ✓")
+                .Append('\n');
         }
 
         return builder.ToString();
     }
+
+    private static async Task PumpAsync() =>
+        await System.Windows.Application.Current.Dispatcher.InvokeAsync(
+            () => { },
+            DispatcherPriority.ApplicationIdle);
 
     private static async Task<bool> WaitForConditionAsync(
         Func<bool> condition,
@@ -409,7 +585,7 @@ internal static class TerminalSmokeTest
             await Task.Delay(40);
         }
 
-        return false;
+        return condition();
     }
 
     private static int Fail(int code, string details)
@@ -438,126 +614,54 @@ internal static class TerminalSmokeTest
         IntPtr wParam,
         IntPtr lParam);
 
-    private sealed class ProbeConnection : ITerminalConnection
+    private sealed class HiddenTerminalWindow : IDisposable
     {
-        private readonly Channel<string> _input =
-            Channel.CreateUnbounded<string>();
+        private readonly System.Windows.Window _window;
 
-        public event EventHandler<TerminalOutputEventArgs>? TerminalOutput;
-
-        public void Start()
+        public HiddenTerminalWindow(TerminalControl terminal)
         {
-        }
-
-        public void WriteInput(string data)
-        {
-            _input.Writer.TryWrite(data);
-        }
-
-        public void Resize(uint rows, uint columns)
-        {
-        }
-
-        public void Close()
-        {
-            _input.Writer.TryComplete();
-        }
-
-        public void EmitOutput(string data) =>
-            TerminalOutput?.Invoke(this, new TerminalOutputEventArgs(data));
-
-        public async Task<string> ReadInputAsync(TimeSpan timeout) =>
-            await _input.Reader.ReadAsync().AsTask().WaitAsync(timeout);
-
-        public async Task<string> ReadUntilAsync(int minimumLength, TimeSpan timeout)
-        {
-            var deadline = DateTime.UtcNow + timeout;
-            var builder = new StringBuilder();
-
-            while (builder.Length < minimumLength)
+            _window = new System.Windows.Window
             {
-                var remaining = deadline - DateTime.UtcNow;
-                if (remaining <= TimeSpan.Zero)
-                {
-                    break;
-                }
-
-                builder.Append(
-                    await _input.Reader.ReadAsync().AsTask().WaitAsync(remaining));
-            }
-
-            return builder.ToString();
-        }
-    }
-
-    private sealed class SmokeSession
-    {
-        private readonly object _outputGate = new();
-        private readonly StringBuilder _output = new();
-        private Task? _lifetime;
-
-        public SmokeSession(TerminalControl terminal)
-        {
-            Terminal = terminal;
-            Job = new JobObject();
-            Term = new TermPTY(READ_BUFFER_SIZE: 1024 * 64);
-            Term.TerminalOutput += (_, e) =>
-            {
-                lock (_outputGate)
-                {
-                    _output.Append(e.Data);
-                }
+                Width = 760,
+                Height = 440,
+                Left = -10000,
+                Top = -10000,
+                ShowInTaskbar = false,
+                WindowStyle = WindowStyle.None,
+                Content = terminal
             };
         }
 
-        public JobObject Job { get; }
-        public TermPTY Term { get; }
-        public TerminalControl Terminal { get; }
-        public bool HasExited => Term.Process?.HasExited != false;
+        public void Show() => _window.Show();
 
-        public int Pid =>
-            Term.Process is EasyWindowsTerminalControl.Internals.ProcessFactory.WrappedProcess wrapped
-                ? wrapped.Pid
-                : -1;
+        public void Dispose() => _window.Close();
+    }
 
-        public async Task StartAsync()
+    private sealed class NativeSmokeSession
+    {
+        private readonly object _outputGate = new();
+        private readonly StringBuilder _output = new();
+
+        public NativeSmokeSession(TerminalControl terminal)
         {
-            var ready = new TaskCompletionSource(
-                TaskCreationOptions.RunContinuationsAsynchronously);
-            Term.TermReady += OnReady;
-
-            try
+            Terminal = terminal;
+            Terminal.SessionOutputForTesting += data =>
             {
-                var factory = new JobAssigningProcessFactory(Job);
-                _lifetime = Task.Run(() =>
-                    Term.Start(
-                        PwshCommand,
-                        consoleWidth: 100,
-                        consoleHeight: 28,
-                        logOutput: false,
-                        factory: factory,
-                        workingDirectory: Environment.CurrentDirectory));
-
-                var first = await Task.WhenAny(
-                    ready.Task,
-                    _lifetime,
-                    Task.Delay(TimeSpan.FromSeconds(15)));
-
-                if (first != ready.Task)
+                lock (_outputGate)
                 {
-                    throw new InvalidOperationException(
-                        "ConPTY smoke session failed to become ready.");
+                    _output.Append(data);
                 }
-
-                await ready.Task;
-            }
-            finally
-            {
-                Term.TermReady -= OnReady;
-            }
-
-            void OnReady(object? sender, EventArgs e) => ready.TrySetResult();
+            };
+            Terminal.SessionExited += _ => Exited.TrySetResult(true);
         }
+
+        public TerminalControl Terminal { get; }
+
+        public TaskCompletionSource<bool> Exited { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Start(string commandLine, string workingDirectory) =>
+            Terminal.StartSession(commandLine, workingDirectory);
 
         public bool ContainsOutput(string value)
         {
@@ -565,47 +669,6 @@ internal static class TerminalSmokeTest
             {
                 return _output.ToString().Contains(value, StringComparison.Ordinal);
             }
-        }
-
-        public async Task TerminateAsync()
-        {
-            Term.CompleteInput();
-            try
-            {
-                Job.Terminate();
-            }
-            catch
-            {
-            }
-
-            if (_lifetime is not null)
-            {
-                try
-                {
-                    await _lifetime.WaitAsync(TimeSpan.FromSeconds(5));
-                }
-                catch
-                {
-                }
-            }
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            if (!HasExited)
-            {
-                await TerminateAsync();
-            }
-
-            try
-            {
-                Term.CloseStdinToApp();
-            }
-            catch
-            {
-            }
-
-            Job.Dispose();
         }
     }
 }

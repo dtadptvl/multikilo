@@ -19,6 +19,12 @@ namespace Microsoft.Terminal.Wpf
         [UnmanagedFunctionPointer(CallingConvention.StdCall)]
         public delegate void WriteCallback([In, MarshalAs(UnmanagedType.LPWStr)] string data);
 
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        public delegate void SessionExitCallback(uint exitCode);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall, CharSet = CharSet.Unicode)]
+        public delegate void SessionOutputCallback([MarshalAs(UnmanagedType.LPWStr)] string data);
+
         public enum WindowMessage : int
         {
             /// <summary>
@@ -223,6 +229,28 @@ namespace Microsoft.Terminal.Wpf
         [DllImport("Microsoft.Terminal.Control.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall, PreserveSig = true)]
         [return: MarshalAs(UnmanagedType.I1)]
         public static extern bool TerminalClipboardContainsImage();
+
+        [DllImport("Microsoft.Terminal.Control.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall, PreserveSig = false)]
+        public static extern void TerminalStartSession(IntPtr terminal, string commandLine, string workingDirectory, uint columns, uint rows);
+
+        [DllImport("Microsoft.Terminal.Control.dll", CallingConvention = CallingConvention.StdCall, PreserveSig = true)]
+        public static extern void TerminalTerminateSession(IntPtr terminal);
+
+        [DllImport("Microsoft.Terminal.Control.dll", CallingConvention = CallingConvention.StdCall, PreserveSig = true)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        public static extern bool TerminalSessionIsRunning(IntPtr terminal);
+
+        [DllImport("Microsoft.Terminal.Control.dll", CallingConvention = CallingConvention.StdCall, PreserveSig = true)]
+        public static extern void TerminalResizeSession(IntPtr terminal, uint columns, uint rows);
+
+        [DllImport("Microsoft.Terminal.Control.dll", CallingConvention = CallingConvention.StdCall, PreserveSig = true)]
+        public static extern void TerminalRegisterSessionExitCallback(IntPtr terminal, SessionExitCallback callback);
+
+        [DllImport("Microsoft.Terminal.Control.dll", CallingConvention = CallingConvention.StdCall, PreserveSig = true)]
+        public static extern void TerminalRegisterSessionOutputCallback(IntPtr terminal, SessionOutputCallback callback);
+
+        [DllImport("Microsoft.Terminal.Control.dll", CallingConvention = CallingConvention.StdCall, PreserveSig = true)]
+        public static extern void TerminalSelectAllForTesting(IntPtr terminal);
 
         [DllImport("Microsoft.Terminal.Control.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall)]
         public static extern void DestroyTerminal(IntPtr terminal);

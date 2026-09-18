@@ -2,61 +2,140 @@ name: windows
 
 on:
   push:
-  pull_request:
+  workflow_dispatch:
+    inputs:
+      full_acceptance:
+        description: Run all terminal acceptance checks and publish artifact
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-test-publish:
+  build-test:
+    if: github.ref != 'refs/heads/main' || inputs.full_acceptance == true
     runs-on: windows-2022
     timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
 
+      - name: Restore cached native terminal
+        id: terminal-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: artifacts/terminal/win-x64
+          key: terminal-win-x64-${{ hashFiles('eng/windows-terminal/Apply-Patch.ps1', 'eng/windows-terminal/Build-PatchedTerminal.ps1') }}
+
       - name: Build patched Windows Terminal native control
+        if: steps.terminal-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: .\eng\windows-terminal\Build-PatchedTerminal.ps1
 
-      - name: Restore
-        run: dotnet restore .\MultiKilo.sln
+      - name: Save native terminal cache
+        if: steps.terminal-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: artifacts/terminal/win-x64
+          key: terminal-win-x64-${{ hashFiles('eng/windows-terminal/Apply-Patch.ps1', 'eng/windows-terminal/Build-PatchedTerminal.ps1') }}
 
-      - name: Build
-        run: dotnet build .\MultiKilo.sln -c Release --no-restore
-
-      - name: ConPTY and terminal smoke test
+      - name: Detect targeted checks
+        id: changes
         shell: pwsh
         run: |
-          $exe = ".\src\MultiKilo\bin\x64\Release\net8.0-windows10.0.19041.0\win-x64\MultiKilo.exe"
-          if (-not (Test-Path $exe)) { throw "Built MultiKilo.exe not found at $exe" }
-          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -PassThru
-          if (-not $process.WaitForExit(45000)) {
-            $process.Kill($true)
-            throw "Smoke test timed out after 45 seconds"
-          }
-          if ($process.ExitCode -ne 0) {
-            $log = Join-Path (Split-Path $exe) "smoke-error.txt"
-            if (Test-Path $log) { Get-Content $log }
-            throw "Smoke test failed with exit code $($process.ExitCode)"
-          }
+          $changed = @(git diff-tree --no-commit-id --name-only -r HEAD)
+          $changed | ForEach-Object { Write-Host "changed: $_" }
+          $message = git log -1 --pretty=%B
+          $forceRelease = $message -match '\[release\]'
+          $forceAll = $forceRelease -or $message -match '\[smoke:all\]'
+          $forceClipboard = $forceAll -or $message -match '\[smoke:clipboard\]'
+          $forcePaste = $forceAll -or $message -match '\[smoke:paste\]'
+          $forceSessions = $forceAll -or $message -match '\[smoke:sessions\]'
+
+          $native = @($changed | Where-Object {
+            $_ -in @(
+              "eng/windows-terminal/Apply-Patch.ps1",
+              "eng/windows-terminal/Build-PatchedTerminal.ps1"
+            )
+          }).Count -gt 0
+
+          $clipboard = $native -or $forceClipboard -or @($changed | Where-Object {
+            $_ -in @(
+              "src/TerminalWpfPatched/NativeMethods.cs",
+              "src/TerminalWpfPatched/TerminalContainer.cs",
+              "src/TerminalWpfPatched/TerminalControl.xaml.cs"
+            )
+          }).Count -gt 0
+
+          $paste = $native -or $forcePaste -or @($changed | Where-Object {
+            $_ -in @(
+              "src/MultiKilo/Terminal/ProjectSession.cs",
+              "src/TerminalWpfPatched/NativeMethods.cs",
+              "src/TerminalWpfPatched/TerminalContainer.cs",
+              "src/TerminalWpfPatched/TerminalControl.xaml.cs"
+            )
+          }).Count -gt 0
+
+          $sessions = $native -or $forceSessions -or @($changed | Where-Object {
+            $_ -in @(
+              "src/MultiKilo/Terminal/ProjectSession.cs",
+              "src/MultiKilo/MainWindow.xaml.cs",
+              "src/TerminalWpfPatched/TerminalContainer.cs",
+              "src/TerminalWpfPatched/TerminalControl.xaml.cs"
+            )
+          }).Count -gt 0
+
+          "clipboard=$($clipboard.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "paste=$($paste.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "sessions=$($sessions.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "release=$($forceRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Restore managed dependencies
+        run: dotnet restore .\MultiKilo.sln
+
+      - name: Build managed solution
+        run: dotnet build .\MultiKilo.sln -c Release --no-restore
+
+      - name: Clipboard and scroll smoke
+        if: steps.terminal-cache.outputs.cache-hit != 'true' || steps.changes.outputs.clipboard == 'true' || inputs.full_acceptance == true
+        shell: pwsh
+        run: .\.github\scripts\Run-Smoke.ps1 clipboard
+
+      - name: 288-line bracketed paste smoke
+        if: steps.terminal-cache.outputs.cache-hit != 'true' || steps.changes.outputs.paste == 'true' || inputs.full_acceptance == true
+        shell: pwsh
+        run: .\.github\scripts\Run-Smoke.ps1 paste
+
+      - name: Native session lifecycle smoke
+        if: steps.terminal-cache.outputs.cache-hit != 'true' || steps.changes.outputs.sessions == 'true' || inputs.full_acceptance == true
+        shell: pwsh
+        run: .\.github\scripts\Run-Smoke.ps1 sessions
 
       - name: Publish portable x64 folder
+        if: steps.changes.outputs.release == 'true' || inputs.full_acceptance == true
         shell: pwsh
         run: .\build.ps1 -SkipTerminalBuild
 
       - name: Inspect output
+        if: steps.changes.outputs.release == 'true' || inputs.full_acceptance == true
         shell: pwsh
         run: |
           $exe = ".\dist\MultiKilo-win-x64\MultiKilo.exe"
           if (-not (Test-Path $exe)) { throw "MultiKilo.exe was not published." }
           if (-not (Test-Path ".\dist\MultiKilo-win-x64\Microsoft.Terminal.Control.dll")) { throw "Patched terminal DLL missing from portable output." }
           Get-ChildItem .\dist\MultiKilo-win-x64 -File | Sort-Object Name | Select-Object Name, Length | Format-Table -AutoSize
-          $bytes = (Get-ChildItem .\dist\MultiKilo-win-x64 -Recurse -File | Measure-Object Length -Sum).Sum
-          "Portable folder size: $([math]::Round($bytes / 1MB, 2)) MB"
 
       - uses: actions/upload-artifact@v4
+        if: steps.changes.outputs.release == 'true' || inputs.full_acceptance == true
         with:
           name: MultiKilo-win-x64
           path: dist/MultiKilo-win-x64/

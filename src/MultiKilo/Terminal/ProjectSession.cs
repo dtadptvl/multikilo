@@ -1,6 +1,5 @@
 using System.Windows;
-using System.Windows.Media;
-using EasyWindowsTerminalControl;
+using System.Windows.Input;
 using Microsoft.Terminal.Wpf;
 using MultiKilo.Models;
 
@@ -15,12 +14,8 @@ public enum ProjectSessionState
 
 public sealed class ProjectSession
 {
-    private const string PwshCommand = "pwsh.exe -NoLogo -NoProfile -NoExit";
-
-    private JobObject? _job;
-    private TermPTY? _term;
-    private Task? _termLifetimeTask;
     private int _generation;
+    private TaskCompletionSource<uint>? _exitSignal;
 
     public ProjectSession(ProjectDefinition project)
     {
@@ -29,14 +24,14 @@ public sealed class ProjectSession
 
     public ProjectDefinition Project { get; }
     public ProjectSessionState State { get; private set; } = ProjectSessionState.Stopped;
-    public EasyTerminalControl? View { get; private set; }
+    public TerminalControl? View { get; private set; }
     public bool IsLive => State is ProjectSessionState.Starting or ProjectSessionState.Running;
 
     public event EventHandler? StateChanged;
 
     public async Task StartAsync(
         bool continueSession,
-        Func<EasyTerminalControl, Task> prepareViewAsync)
+        Func<TerminalControl, Task> prepareViewAsync)
     {
         ArgumentNullException.ThrowIfNull(prepareViewAsync);
 
@@ -49,68 +44,42 @@ public sealed class ProjectSession
         RaiseStateChanged();
 
         var generation = ++_generation;
-        var job = new JobObject();
-        var term = new TermPTY(READ_BUFFER_SIZE: 1024 * 64);
-        var view = CreateTerminalView(term, Project.Folder);
-        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var view = CreateTerminalView();
+        var exitSignal = new TaskCompletionSource<uint>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        term.TermReady += (_, _) => ready.TrySetResult();
-
-        _job = job;
-        _term = term;
         View = view;
+        _exitSignal = exitSignal;
+        view.SessionExited += OnSessionExited;
 
         try
         {
-            // The native HwndTerminal must exist before pwsh/kilo can emit any
-            // VT state. Otherwise startup sequences such as DECSET 2004
-            // (bracketed paste) or alternate-screen setup can be lost.
             await prepareViewAsync(view);
-
-            var factory = new JobAssigningProcessFactory(job);
-            var lifetimeTask = Task.Run(() =>
-                term.Start(
-                    PwshCommand,
-                    consoleWidth: 120,
-                    consoleHeight: 32,
-                    logOutput: false,
-                    factory: factory,
-                    workingDirectory: Project.Folder));
-
-            _termLifetimeTask = lifetimeTask;
-
-            var first = await Task.WhenAny(ready.Task, lifetimeTask, Task.Delay(TimeSpan.FromSeconds(15)));
-            if (first == lifetimeTask)
-            {
-                await lifetimeTask;
-                throw new InvalidOperationException("PowerShell exited before the terminal became ready.");
-            }
-
-            if (first != ready.Task)
-            {
-                throw new TimeoutException("Timed out while starting the ConPTY session.");
-            }
-
-            await ready.Task;
+            view.SetTheme(CreateTheme(), "Cascadia Mono", 13);
 
             var kilo = continueSession ? "kilo --auto --continue" : "kilo --auto";
-            term.WriteToTerm(kilo + "; exit\r");
+            var commandLine = $"pwsh.exe -NoLogo -NoProfile -Command \"{kilo}; exit\"";
+            view.StartSession(commandLine, Project.Folder);
+
+            if (generation != _generation)
+            {
+                view.TerminateSession();
+                return;
+            }
 
             State = ProjectSessionState.Running;
             RaiseStateChanged();
-
-            _ = ObserveExitAsync(lifetimeTask, generation);
         }
         catch
         {
-            await CleanupFailedStartAsync();
+            CleanupFailedStart(view);
             throw;
         }
     }
 
     public async Task TerminateAsync()
     {
-        if (!IsLive && _job is null)
+        var view = View;
+        if (!IsLive && (view is null || !view.IsSessionRunning))
         {
             State = ProjectSessionState.Stopped;
             RaiseStateChanged();
@@ -118,111 +87,79 @@ public sealed class ProjectSession
         }
 
         ++_generation;
-
-        var job = _job;
-        var term = _term;
-        var lifetime = _termLifetimeTask;
-
-        _job = null;
-        _term = null;
-        _termLifetimeTask = null;
-
-        term?.CompleteInput();
+        var exitSignal = _exitSignal;
 
         try
         {
-            term?.CloseStdinToApp();
-        }
-        catch
-        {
-        }
+            view?.TerminateSession();
 
-        try
-        {
-            job?.Terminate();
-        }
-        finally
-        {
-            if (lifetime is not null)
+            if (exitSignal is not null)
             {
                 try
                 {
-                    await lifetime.WaitAsync(TimeSpan.FromSeconds(5));
+                    await exitSignal.Task.WaitAsync(TimeSpan.FromSeconds(5));
                 }
                 catch
                 {
                 }
             }
-
-            job?.Dispose();
+        }
+        finally
+        {
             State = ProjectSessionState.Stopped;
             RaiseStateChanged();
         }
     }
 
-    private async Task ObserveExitAsync(Task lifetimeTask, int generation)
+    private void OnSessionExited(uint exitCode)
     {
-        try
-        {
-            await lifetimeTask;
-        }
-        catch
-        {
-        }
+        _exitSignal?.TrySetResult(exitCode);
 
-        if (generation != _generation)
+        if (State == ProjectSessionState.Stopped)
         {
             return;
         }
 
-        await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
-        {
-            _term?.CompleteInput();
-            _job?.Dispose();
-            _job = null;
-            _term = null;
-            _termLifetimeTask = null;
-            State = ProjectSessionState.Stopped;
-            RaiseStateChanged();
-        });
+        State = ProjectSessionState.Stopped;
+        RaiseStateChanged();
     }
 
-    private async Task CleanupFailedStartAsync()
+    private void CleanupFailedStart(TerminalControl view)
     {
         ++_generation;
-        _term?.CompleteInput();
 
         try
         {
-            _job?.Terminate();
+            view.TerminateSession();
         }
         catch
         {
         }
 
-        if (_termLifetimeTask is not null)
-        {
-            try
-            {
-                await _termLifetimeTask.WaitAsync(TimeSpan.FromSeconds(2));
-            }
-            catch
-            {
-            }
-        }
-
-        _job?.Dispose();
-        _job = null;
-        _term = null;
-        _termLifetimeTask = null;
+        view.SessionExited -= OnSessionExited;
+        _exitSignal = null;
         View = null;
         State = ProjectSessionState.Stopped;
         RaiseStateChanged();
     }
 
-    private static EasyTerminalControl CreateTerminalView(TermPTY term, string workingDirectory)
+    private static TerminalControl CreateTerminalView()
     {
-        var theme = new TerminalTheme
+        var view = new TerminalControl
+        {
+            AutoResize = true,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Focusable = true
+        };
+
+        KeyboardNavigation.SetTabNavigation(view, KeyboardNavigationMode.Contained);
+        KeyboardNavigation.SetDirectionalNavigation(view, KeyboardNavigationMode.Contained);
+        return view;
+    }
+
+    private static TerminalTheme CreateTheme() =>
+        new()
         {
             DefaultBackground = 0x0C0C0C,
             DefaultForeground = 0xCCCCCC,
@@ -236,22 +173,6 @@ public sealed class ProjectSession
                 0xFF783B, 0x9E00B4, 0xD6D661, 0xF2F2F2
             ]
         };
-
-        return new EasyTerminalControl
-        {
-            ConPTYTerm = term,
-            StartupCommandLine = PwshCommand,
-            WorkingDirectory = workingDirectory,
-            Win32InputMode = false,
-            InputCapture = EasyTerminalControl.INPUT_CAPTURE.TabKey |
-                           EasyTerminalControl.INPUT_CAPTURE.DirectionKeys,
-            FontFamilyWhenSettingTheme = new System.Windows.Media.FontFamily("Cascadia Mono"),
-            FontSizeWhenSettingTheme = 13,
-            Theme = theme,
-            HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
-            VerticalAlignment = System.Windows.VerticalAlignment.Stretch
-        };
-    }
 
     private void RaiseStateChanged() => StateChanged?.Invoke(this, EventArgs.Empty);
 }
