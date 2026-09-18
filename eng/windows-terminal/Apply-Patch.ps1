@@ -83,11 +83,19 @@ try
     auto filtered = FilterStringForPaste(clipboardText, CarriageReturnNewline | ControlCodes);
 
     bool bracketedPaste = false;
+    bool alternateScreen = false;
     if (_terminal)
     {
         const auto lock = _terminal->LockForReading();
         bracketedPaste = _terminal->IsXtermBracketedPasteModeEnabled();
+        alternateScreen = _terminal->IsInAlternateBuffer();
     }
+
+    // ConPTY owns the application's bracketed-paste state internally. The
+    // lower-level WPF HwndTerminal does not always observe DECSET 2004 from
+    // Kilo/OpenTUI even though the TUI has enabled it. Kilo always supports
+    // bracketed paste while its alternate-screen UI is active.
+    bracketedPaste = bracketedPaste || (_bracketedPasteSupported && alternateScreen);
 
     if (bracketedPaste)
     {
@@ -206,7 +214,7 @@ __declspec(dllexport) bool _stdcall TerminalClipboardContainsImage();
 '@
 $hppExportsNew = @'
 __declspec(dllexport) bool _stdcall TerminalClipboardContainsImage();
-__declspec(dllexport) HRESULT _stdcall TerminalStartSession(void* terminal, LPCWSTR commandLine, LPCWSTR workingDirectory, uint32_t columns, uint32_t rows);
+__declspec(dllexport) HRESULT _stdcall TerminalStartSession(void* terminal, LPCWSTR commandLine, LPCWSTR workingDirectory, BOOL bracketedPasteSupported, uint32_t columns, uint32_t rows);
 __declspec(dllexport) void _stdcall TerminalTerminateSession(void* terminal);
 __declspec(dllexport) bool _stdcall TerminalSessionIsRunning(void* terminal);
 __declspec(dllexport) void _stdcall TerminalResizeSession(void* terminal, uint32_t columns, uint32_t rows);
@@ -221,7 +229,7 @@ $hppFriendsOld = @'
 '@
 $hppFriendsNew = @'
     friend void _stdcall TerminalPasteFromClipboard(void* terminal);
-    friend HRESULT _stdcall TerminalStartSession(void* terminal, LPCWSTR commandLine, LPCWSTR workingDirectory, uint32_t columns, uint32_t rows);
+    friend HRESULT _stdcall TerminalStartSession(void* terminal, LPCWSTR commandLine, LPCWSTR workingDirectory, BOOL bracketedPasteSupported, uint32_t columns, uint32_t rows);
     friend void _stdcall TerminalTerminateSession(void* terminal);
     friend bool _stdcall TerminalSessionIsRunning(void* terminal);
     friend void _stdcall TerminalResizeSession(void* terminal, uint32_t columns, uint32_t rows);
@@ -245,6 +253,7 @@ $hppStateNew = @'
     void (_stdcall* _sessionOutputCallback)(LPCWSTR){ nullptr };
     bool _suppressCopyChar{ false };
     bool _suppressPasteChar{ false };
+    bool _bracketedPasteSupported{ false };
 '@
 Replace-Once $hpp $hppStateOld $hppStateNew
 
@@ -847,13 +856,14 @@ $charFunction = $charFunction.Substring(0, $absoluteIndex) + $charNew + $charFun
 Write-Normalized $cpp $charFunction
 
 $sessionExports = @'
-HRESULT _stdcall TerminalStartSession(void* terminal, LPCWSTR commandLine, LPCWSTR workingDirectory, uint32_t columns, uint32_t rows)
+HRESULT _stdcall TerminalStartSession(void* terminal, LPCWSTR commandLine, LPCWSTR workingDirectory, BOOL bracketedPasteSupported, uint32_t columns, uint32_t rows)
 try
 {
     const auto publicTerminal = static_cast<HwndTerminal*>(terminal);
     RETURN_HR_IF_NULL(E_INVALIDARG, publicTerminal);
     RETURN_HR_IF_NULL(E_INVALIDARG, commandLine);
 
+    publicTerminal->_bracketedPasteSupported = bracketedPasteSupported != FALSE;
     publicTerminal->_nativeSession = std::make_unique<MultiKiloNativeSession>(publicTerminal);
     publicTerminal->_nativeSession->SetExitCallback(publicTerminal->_sessionExitCallback);
     publicTerminal->_nativeSession->SetOutputCallback(publicTerminal->_sessionOutputCallback);
@@ -865,6 +875,7 @@ try
         rows);
     if (FAILED(hr))
     {
+        publicTerminal->_bracketedPasteSupported = false;
         publicTerminal->_nativeSession.reset();
     }
     return hr;
@@ -874,9 +885,13 @@ CATCH_RETURN()
 void _stdcall TerminalTerminateSession(void* terminal)
 try
 {
-    if (const auto publicTerminal = static_cast<HwndTerminal*>(terminal); publicTerminal && publicTerminal->_nativeSession)
+    if (const auto publicTerminal = static_cast<HwndTerminal*>(terminal); publicTerminal)
     {
-        publicTerminal->_nativeSession->Terminate();
+        publicTerminal->_bracketedPasteSupported = false;
+        if (publicTerminal->_nativeSession)
+        {
+            publicTerminal->_nativeSession->Terminate();
+        }
     }
 }
 CATCH_LOG()
@@ -962,3 +977,28 @@ $defNew = @'
 Replace-Once $def $defOld $defNew
 
 Write-Host "Applied MultiKilo native ConPTY session backend."
+
+# Expose active alternate-screen state to the native paste policy.
+$terminalCoreHpp = "src\cascadia\TerminalCore\Terminal.hpp"
+Replace-Once $terminalCoreHpp "    bool IsXtermBracketedPasteModeEnabled() const noexcept;" ("    bool IsXtermBracketedPasteModeEnabled() const noexcept;" + [Environment]::NewLine + "    bool IsInAlternateBuffer() const noexcept;")
+
+$terminalCoreCpp = "src\cascadia\TerminalCore\Terminal.cpp"
+$coreModeOld = @'
+bool Terminal::IsXtermBracketedPasteModeEnabled() const noexcept
+{
+    return _systemMode.test(Mode::BracketedPaste);
+}
+'@
+$coreModeNew = @'
+bool Terminal::IsXtermBracketedPasteModeEnabled() const noexcept
+{
+    return _systemMode.test(Mode::BracketedPaste);
+}
+
+bool Terminal::IsInAlternateBuffer() const noexcept
+{
+    return _inAltBuffer();
+}
+'@
+Replace-Once $terminalCoreCpp $coreModeOld $coreModeNew
+Write-Host "Applied Kilo alternate-screen bracketed-paste capability fallback."
