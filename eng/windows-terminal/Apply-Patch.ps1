@@ -246,12 +246,8 @@ $hppStateNew = @'
 '@
 Replace-Once $hpp $hppStateOld $hppStateNew
 
-$cppIncludesOld = @'
-#include <windowsx.h>
-#include "../../types/inc/utils.hpp"
-'@
+$cppIncludesOld = '#include "../../types/inc/utils.hpp"'
 $cppIncludesNew = @'
-#include <windowsx.h>
 #include "../../types/inc/utils.hpp"
 #include <atomic>
 #include <condition_variable>
