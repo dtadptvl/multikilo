@@ -256,6 +256,7 @@ $cppIncludesNew = @'
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <til/env.h>
 '@
 Replace-Once $cpp $cppIncludesOld $cppIncludesNew
 
@@ -339,6 +340,21 @@ public:
         mutableCommand.push_back(L'\0');
         const auto directory = workingDirectory.empty() ? nullptr : workingDirectory.data();
 
+        // Match Windows Terminal's ConptyConnection process environment.
+        // A number of Windows TUIs use WT_SESSION to select their raw VT
+        // input path (which is where bracketed paste is enabled).
+        auto environment = til::env::from_current_environment();
+        const auto sessionId = ::Microsoft::Console::Utils::CreateGuid();
+        const auto profileId = ::Microsoft::Console::Utils::CreateGuid();
+        environment.as_map().insert_or_assign(
+            L"WT_SESSION",
+            ::Microsoft::Console::Utils::GuidToPlainString(sessionId));
+        environment.as_map().insert_or_assign(
+            L"WT_PROFILE_ID",
+            ::Microsoft::Console::Utils::GuidToString(profileId));
+        auto environmentBlock = environment.to_string();
+        auto environmentData = environmentBlock.empty() ? nullptr : environmentBlock.data();
+
         PROCESS_INFORMATION pi{};
         RETURN_IF_WIN32_BOOL_FALSE(CreateProcessW(
             nullptr,
@@ -347,7 +363,7 @@ public:
             nullptr,
             FALSE,
             EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
-            nullptr,
+            environmentData,
             directory,
             &si.StartupInfo,
             &pi));

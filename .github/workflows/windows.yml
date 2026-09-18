@@ -56,6 +56,7 @@ jobs:
           $changed | ForEach-Object { Write-Host "changed: $_" }
           $message = git log -1 --pretty=%B
           $forceRelease = $message -match '\[release\]'
+          $forceArtifact = $forceRelease -or $message -match '\[artifact\]'
           $forceAll = $forceRelease -or $message -match '\[smoke:all\]'
           $forceClipboard = $forceAll -or $message -match '\[smoke:clipboard\]'
           $forcePaste = $forceAll -or $message -match '\[smoke:paste\]'
@@ -98,6 +99,7 @@ jobs:
           "paste=$($paste.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "sessions=$($sessions.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "release=$($forceRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "artifact=$($forceArtifact.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
 
       - name: Restore managed dependencies
         run: dotnet restore .\MultiKilo.sln
@@ -121,12 +123,12 @@ jobs:
         run: .\.github\scripts\Run-Smoke.ps1 sessions
 
       - name: Publish portable x64 folder
-        if: steps.changes.outputs.release == 'true' || inputs.full_acceptance == true
+        if: steps.changes.outputs.artifact == 'true' || inputs.full_acceptance == true
         shell: pwsh
         run: .\build.ps1 -SkipTerminalBuild
 
       - name: Inspect output
-        if: steps.changes.outputs.release == 'true' || inputs.full_acceptance == true
+        if: steps.changes.outputs.artifact == 'true' || inputs.full_acceptance == true
         shell: pwsh
         run: |
           $exe = ".\dist\MultiKilo-win-x64\MultiKilo.exe"
@@ -135,7 +137,7 @@ jobs:
           Get-ChildItem .\dist\MultiKilo-win-x64 -File | Sort-Object Name | Select-Object Name, Length | Format-Table -AutoSize
 
       - uses: actions/upload-artifact@v4
-        if: steps.changes.outputs.release == 'true' || inputs.full_acceptance == true
+        if: steps.changes.outputs.artifact == 'true' || inputs.full_acceptance == true
         with:
           name: MultiKilo-win-x64
           path: dist/MultiKilo-win-x64/

@@ -154,6 +154,9 @@ internal static class TerminalSmokeTest
 
             $esc = [char]27
             $crlf = ([char]13).ToString() + ([char]10)
+            $hasWtSession = -not [string]::IsNullOrWhiteSpace($env:WT_SESSION)
+            $hasWtProfile = -not [string]::IsNullOrWhiteSpace($env:WT_PROFILE_ID)
+            [Console]::Write("MULTIKILO_WT_ENV:${hasWtSession}:${hasWtProfile}" + $crlf)
             [Console]::Write("$esc[?2004h")
             [Console]::Write("MULTIKILO_BRACKET_READY" + $crlf)
 
@@ -278,6 +281,15 @@ internal static class TerminalSmokeTest
             terminal.StartSession(
                 $"pwsh.exe -NoLogo -NoProfile -File \"{bracketScriptPath}\"",
                 tempDir);
+
+            if (!await WaitForConditionAsync(
+                    () => ContainsOutput("MULTIKILO_WT_ENV:True:True"),
+                    TimeSpan.FromSeconds(10)))
+            {
+                return FailWithSnapshot(
+                    63,
+                    "Native ConPTY child did not receive Windows Terminal identity environment.");
+            }
 
             if (!await WaitForConditionAsync(
                     () => ContainsOutput("MULTIKILO_BRACKET_READY"),
