@@ -68,17 +68,43 @@ internal static class TerminalSmokeTest
             terminal.SetTheme(CreateTheme(), "Cascadia Mono", 13);
             terminal.Connection = connection;
 
+            const string nativeKeyboardProbe = "keyboard-probe";
+            foreach (var ch in nativeKeyboardProbe)
+            {
+                NativeMethods.TerminalSendCharEvent(
+                    terminal.NativeTerminalForTesting,
+                    ch,
+                    0,
+                    0);
+            }
+
+            const ushort ProbeReturnScanCode = 0x1C;
+            NativeMethods.TerminalSendKeyEvent(
+                terminal.NativeTerminalForTesting,
+                0x0D,
+                ProbeReturnScanCode,
+                0,
+                true);
             NativeMethods.TerminalSendCharEvent(
                 terminal.NativeTerminalForTesting,
-                'k',
-                0,
+                '\r',
+                ProbeReturnScanCode,
                 0);
-            var keyboardProbe = await connection.ReadInputAsync(TimeSpan.FromSeconds(2));
-            if (keyboardProbe != "k")
+            NativeMethods.TerminalSendKeyEvent(
+                terminal.NativeTerminalForTesting,
+                0x0D,
+                ProbeReturnScanCode,
+                0,
+                false);
+
+            var keyboardProbe = await connection.ReadUntilAsync(
+                nativeKeyboardProbe.Length + 1,
+                TimeSpan.FromSeconds(2));
+            if (keyboardProbe != nativeKeyboardProbe + "\r")
             {
                 return Fail(
                     41,
-                    $"Native printable keyboard input mismatch. Received={keyboardProbe.Replace("\x1b", "<ESC>")}.");
+                    $"Native keyboard translation mismatch. Received={keyboardProbe.Replace("\x1b", "<ESC>")}.");
             }
 
             connection.EmitOutput("\x1b[?2004h");
@@ -235,7 +261,7 @@ internal static class TerminalSmokeTest
             for (var i = 0; i < sessions.Count; i++)
             {
                 sessions[i].Term.WriteToTerm(
-                    $"Write-Output ('MULTIKILO_SHELL_'+'READY_{i + 1}')\r");
+                    $"Write-Output 'MULTIKILO_SHELL_READY_{i + 1}'\r");
             }
 
             if (!await WaitForConditionAsync(
@@ -248,43 +274,9 @@ internal static class TerminalSmokeTest
                 return Fail(42, "PowerShell sessions did not become command-ready.");
             }
 
-            const string keyboardExecutedMarker = "multikilokeyboardexecuted";
-            const string keyboardCommand =
-                "echo multikilokeyboardexecuted";
-            await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
-            {
-                foreach (var ch in keyboardCommand)
-                {
-                    NativeMethods.TerminalSendCharEvent(
-                        sessions[0].Terminal.NativeTerminalForTesting,
-                        ch,
-                        0,
-                        0);
-                }
-
-                // Match the Win32 message sequence delivered by the HwndHost.
-                // TerminalCore intentionally defers character-producing keydown
-                // events to the subsequent WM_CHAR.
-                const ushort VkReturn = 0x0D;
-                const ushort ReturnScanCode = 0x1C;
-                NativeMethods.TerminalSendKeyEvent(
-                    sessions[0].Terminal.NativeTerminalForTesting,
-                    VkReturn,
-                    ReturnScanCode,
-                    0,
-                    true);
-                NativeMethods.TerminalSendCharEvent(
-                    sessions[0].Terminal.NativeTerminalForTesting,
-                    '\r',
-                    ReturnScanCode,
-                    0);
-                NativeMethods.TerminalSendKeyEvent(
-                    sessions[0].Terminal.NativeTerminalForTesting,
-                    VkReturn,
-                    ReturnScanCode,
-                    0,
-                    false);
-            });
+            const string keyboardExecutedMarker = "MULTIKILO_CONNECTION_INPUT_OK";
+            ((ITerminalConnection)sessions[0].Term).WriteInput(
+                $"Write-Output '{keyboardExecutedMarker}'\r");
 
             if (!await WaitForConditionAsync(
                     () => sessions[0].ContainsOutput(keyboardExecutedMarker),
@@ -292,7 +284,7 @@ internal static class TerminalSmokeTest
             {
                 return Fail(
                     36,
-                    "TerminalCore -> standard VT input -> ConPTY keyboard path failed.");
+                    "ITerminalConnection -> TermPTY queue -> ConPTY input path failed.");
             }
 
             for (var i = 0; i < sessions.Count; i++)
@@ -476,6 +468,26 @@ internal static class TerminalSmokeTest
 
         public async Task<string> ReadInputAsync(TimeSpan timeout) =>
             await _input.Reader.ReadAsync().AsTask().WaitAsync(timeout);
+
+        public async Task<string> ReadUntilAsync(int minimumLength, TimeSpan timeout)
+        {
+            var deadline = DateTime.UtcNow + timeout;
+            var builder = new StringBuilder();
+
+            while (builder.Length < minimumLength)
+            {
+                var remaining = deadline - DateTime.UtcNow;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    break;
+                }
+
+                builder.Append(
+                    await _input.Reader.ReadAsync().AsTask().WaitAsync(remaining));
+            }
+
+            return builder.ToString();
+        }
     }
 
     private sealed class SmokeSession
