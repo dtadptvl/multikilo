@@ -46,9 +46,13 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
     private Task? _writerTask;
     private int _ioStartRequested;
     private int _nativePasteDepth;
-    private int _modeProbeIndex;
+    private int _vtParseState;
+    private int _privateModeParam;
+    private bool _privateModeHas2004;
     private bool _disposed;
     private volatile bool _bracketedPasteEnabled;
+    private long _lastNativePasteBytes;
+    private int _lastNativePasteBracketed;
     private int _pendingColumns = 120;
     private int _pendingRows = 32;
 
@@ -70,6 +74,9 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
     public Task IoStarted => _ioStarted.Task;
     public Task Completion => _completion.Task;
     public bool ProcessHasExited => _process?.HasExited ?? true;
+    internal bool BracketedPasteEnabled => _bracketedPasteEnabled;
+    internal long LastNativePasteBytes => Interlocked.Read(ref _lastNativePasteBytes);
+    internal bool LastNativePasteWasBracketed => Volatile.Read(ref _lastNativePasteBracketed) != 0;
 
     public Task StartProcessAsync()
     {
@@ -103,11 +110,8 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
 
         if (Volatile.Read(ref _nativePasteDepth) > 0)
         {
-            data = FilterStringForPaste(data);
-            if (_bracketedPasteEnabled)
-            {
-                data = string.Concat(BracketedPastePrefix, data, BracketedPasteSuffix);
-            }
+            QueueNativePaste(data);
+            return;
         }
 
         QueueUtf8(data);
@@ -364,9 +368,37 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
         }
     }
 
-    private void QueueUtf8(string data)
+    private void QueueNativePaste(string data)
     {
-        var bytes = Encoding.UTF8.GetBytes(data);
+        var filtered = FilterStringForPaste(data);
+        var bracketed = _bracketedPasteEnabled;
+
+        byte[] bytes;
+        if (bracketed)
+        {
+            var prefix = Encoding.ASCII.GetBytes(BracketedPastePrefix);
+            var suffix = Encoding.ASCII.GetBytes(BracketedPasteSuffix);
+            var contentByteCount = Encoding.UTF8.GetByteCount(filtered);
+            bytes = GC.AllocateUninitializedArray<byte>(prefix.Length + contentByteCount + suffix.Length);
+
+            prefix.CopyTo(bytes, 0);
+            Encoding.UTF8.GetBytes(filtered.AsSpan(), bytes.AsSpan(prefix.Length, contentByteCount));
+            suffix.CopyTo(bytes, prefix.Length + contentByteCount);
+        }
+        else
+        {
+            bytes = Encoding.UTF8.GetBytes(filtered);
+        }
+
+        Interlocked.Exchange(ref _lastNativePasteBytes, bytes.LongLength);
+        Volatile.Write(ref _lastNativePasteBracketed, bracketed ? 1 : 0);
+        QueueBytes(bytes);
+    }
+
+    private void QueueUtf8(string data) => QueueBytes(Encoding.UTF8.GetBytes(data));
+
+    private void QueueBytes(byte[] bytes)
+    {
         if (!_inputQueue.Writer.TryWrite(bytes))
         {
             throw new InvalidOperationException("Terminal input queue is closed.");
@@ -377,30 +409,76 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
     {
         foreach (var ch in output)
         {
-            if (_modeProbeIndex < BracketedModePrefix.Length)
+            switch (_vtParseState)
             {
-                if (ch == BracketedModePrefix[_modeProbeIndex])
-                {
-                    _modeProbeIndex++;
-                }
-                else
-                {
-                    _modeProbeIndex = ch == BracketedModePrefix[0] ? 1 : 0;
-                }
+                case 0:
+                    if (ch == '\x1b')
+                    {
+                        _vtParseState = 1;
+                    }
+                    break;
 
-                continue;
-            }
+                case 1:
+                    if (ch == '[')
+                    {
+                        _vtParseState = 2;
+                    }
+                    else
+                    {
+                        if (ch == 'c')
+                        {
+                            _bracketedPasteEnabled = false;
+                        }
 
-            if (ch == 'h')
-            {
-                _bracketedPasteEnabled = true;
-            }
-            else if (ch == 'l')
-            {
-                _bracketedPasteEnabled = false;
-            }
+                        _vtParseState = ch == '\x1b' ? 1 : 0;
+                    }
+                    break;
 
-            _modeProbeIndex = ch == BracketedModePrefix[0] ? 1 : 0;
+                case 2:
+                    if (ch == '?')
+                    {
+                        _privateModeParam = 0;
+                        _privateModeHas2004 = false;
+                        _vtParseState = 3;
+                    }
+                    else
+                    {
+                        _vtParseState = ch == '\x1b' ? 1 : 0;
+                    }
+                    break;
+
+                case 3:
+                    if (ch is >= '0' and <= '9')
+                    {
+                        _privateModeParam = Math.Min(
+                            100_000,
+                            (_privateModeParam * 10) + (ch - '0'));
+                    }
+                    else if (ch is ';' or ':')
+                    {
+                        _privateModeHas2004 |= _privateModeParam == 2004;
+                        _privateModeParam = 0;
+                    }
+                    else if (ch is 'h' or 'l')
+                    {
+                        _privateModeHas2004 |= _privateModeParam == 2004;
+                        if (_privateModeHas2004)
+                        {
+                            _bracketedPasteEnabled = ch == 'h';
+                        }
+
+                        _vtParseState = 0;
+                        _privateModeParam = 0;
+                        _privateModeHas2004 = false;
+                    }
+                    else
+                    {
+                        _vtParseState = ch == '\x1b' ? 1 : 0;
+                        _privateModeParam = 0;
+                        _privateModeHas2004 = false;
+                    }
+                    break;
+            }
         }
     }
 

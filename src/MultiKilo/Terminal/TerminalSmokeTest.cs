@@ -104,7 +104,16 @@ internal static class TerminalSmokeTest
                 "[Console]::WriteLine('RAWPASTE_BYTES='+$total)";
 
             sessions[0].Connection.WriteRawInput(rawReaderCommand + "\r");
-            await Task.Delay(400);
+
+            if (!await WaitForConditionAsync(
+                    () => sessions[0].Connection.BracketedPasteEnabled,
+                    TimeSpan.FromSeconds(3)))
+            {
+                return Fail(
+                    26,
+                    "Terminal never entered DEC bracketed-paste mode (?2004h). " +
+                    Tail(sessions[0].Connection.GetCapturedOutput()));
+            }
 
             System.Windows.Clipboard.SetText(largePaste);
 
@@ -122,7 +131,9 @@ internal static class TerminalSmokeTest
 
             if (pasteTimer.Elapsed > TimeSpan.FromSeconds(1))
             {
-                return 24;
+                return Fail(
+                    24,
+                    $"Native paste dispatch took {pasteTimer.Elapsed.TotalMilliseconds:F0} ms.");
             }
 
             if (!await WaitForOutputAsync(
@@ -130,7 +141,12 @@ internal static class TerminalSmokeTest
                     $"RAWPASTE_BYTES={expectedPasteBytes}",
                     TimeSpan.FromSeconds(10)))
             {
-                return 25;
+                return Fail(
+                    25,
+                    $"1 MB paste did not complete. ExpectedBytes={expectedPasteBytes}, " +
+                    $"QueuedBytes={sessions[0].Connection.LastNativePasteBytes}, " +
+                    $"Bracketed={sessions[0].Connection.LastNativePasteWasBracketed}. " +
+                    Tail(sessions[0].Connection.GetCapturedOutput()));
             }
 
             for (var i = 0; i < sessions.Count; i++)
@@ -186,6 +202,25 @@ internal static class TerminalSmokeTest
         }
     }
 
+    private static async Task<bool> WaitForConditionAsync(
+        Func<bool> condition,
+        TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return true;
+            }
+
+            await Task.Delay(25);
+        }
+
+        return false;
+    }
+
     private static async Task<bool> WaitForOutputAsync(
         NativeConPtyConnection connection,
         string expected,
@@ -204,6 +239,27 @@ internal static class TerminalSmokeTest
         }
 
         return false;
+    }
+
+    private static int Fail(int code, string details)
+    {
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(AppContext.BaseDirectory, "smoke-error.txt"),
+                details);
+        }
+        catch
+        {
+        }
+
+        return code;
+    }
+
+    private static string Tail(string text)
+    {
+        const int maxChars = 4000;
+        return text.Length <= maxChars ? text : text[^maxChars..];
     }
 
     private static string CreateLargePastePayload()
