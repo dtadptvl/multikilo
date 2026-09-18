@@ -231,7 +231,7 @@ namespace Microsoft.Terminal.Wpf
         public static extern bool TerminalClipboardContainsImage();
 
         [DllImport("Microsoft.Terminal.Control.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall, PreserveSig = false)]
-        public static extern void TerminalStartSession(IntPtr terminal, string commandLine, string workingDirectory, uint columns, uint rows);
+        public static extern void TerminalStartSession(IntPtr terminal, string commandLine, string workingDirectory, bool bracketedPasteSupported, uint columns, uint rows);
 
         [DllImport("Microsoft.Terminal.Control.dll", CallingConvention = CallingConvention.StdCall, PreserveSig = true)]
         public static extern void TerminalTerminateSession(IntPtr terminal);
