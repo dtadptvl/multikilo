@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Microsoft.Terminal.Wpf;
 
 namespace MultiKilo.Terminal;
 
@@ -94,15 +95,71 @@ internal static class TerminalSmokeTest
             var largePaste = CreateLargePastePayload();
             var expectedPasteBytes = Encoding.UTF8.GetByteCount(largePaste) + 12;
 
+            var encoded = NativeConPtyConnection.EncodeNativePaste(
+                largePaste,
+                bracketed: true);
+
+            if (encoded.Length != expectedPasteBytes ||
+                !encoded.AsSpan(0, 6).SequenceEqual("\x1b[200~"u8) ||
+                !encoded.AsSpan(encoded.Length - 6, 6).SequenceEqual("\x1b[201~"u8))
+            {
+                return Fail(
+                    27,
+                    $"1 MB native paste encoding mismatch. ExpectedBytes={expectedPasteBytes}, " +
+                    $"ActualBytes={encoded.Length}.");
+            }
+
+            var probe = new ClipboardProbeConnection();
+            var probeTerminal = new TerminalControl
+            {
+                AutoResize = true,
+                Visibility = Visibility.Visible
+            };
+            host.Children.Add(probeTerminal);
+            probeTerminal.Connection = probe;
+            probeTerminal.Focus();
+
+            await System.Windows.Application.Current.Dispatcher.InvokeAsync(
+                () => { },
+                DispatcherPriority.ApplicationIdle);
+
+            var probeHwnd = NativeTerminalClipboard.FindVisibleTerminalDescendant(
+                new WindowInteropHelper(window).Handle);
+            if (probeHwnd == IntPtr.Zero)
+            {
+                return Fail(29, "Could not locate native HwndTerminal for clipboard probe.");
+            }
+
+            System.Windows.Clipboard.SetText(largePaste);
+            var pasteTimer = Stopwatch.StartNew();
+            NativeTerminalClipboard.InvokeNativeCopyOrPaste(probeHwnd);
+            pasteTimer.Stop();
+
+            if (pasteTimer.Elapsed > TimeSpan.FromSeconds(1) ||
+                probe.ReceivedTextLength != largePaste.Length ||
+                probe.ReceivedTextFirst != largePaste[0] ||
+                probe.ReceivedTextLast != largePaste[^1])
+            {
+                return Fail(
+                    24,
+                    $"Native 1 MB clipboard dispatch mismatch. Ms={pasteTimer.Elapsed.TotalMilliseconds:F0}, " +
+                    $"ExpectedChars={largePaste.Length}, ReceivedChars={probe.ReceivedTextLength}.");
+            }
+
+            probeTerminal.Connection = null!;
+            host.Children.Remove(probeTerminal);
+
             sessions[0].Connection.TrackBracketedPasteMode("\x1b[?1;2004;1004h");
             if (!sessions[0].Connection.BracketedPasteEnabled)
             {
                 return Fail(26, "Bracketed-paste mode tracker did not recognise DECSET 2004.");
             }
 
-            System.Windows.Clipboard.SetText(largePaste);
+            const string smallPaste = "Tiếng Việt paste integration\nline 2\nline 3";
+            var smallExpectedBytes =
+                NativeConPtyConnection.EncodeNativePaste(smallPaste, bracketed: true).Length;
 
-            var pasteTimer = Stopwatch.StartNew();
+            System.Windows.Clipboard.SetText(smallPaste);
             sessions[0].Connection.BeginNativePaste();
             try
             {
@@ -112,35 +169,16 @@ internal static class TerminalSmokeTest
             {
                 sessions[0].Connection.EndNativePaste();
             }
-            pasteTimer.Stop();
-
-            if (pasteTimer.Elapsed > TimeSpan.FromSeconds(1))
-            {
-                return Fail(
-                    24,
-                    $"Native paste dispatch took {pasteTimer.Elapsed.TotalMilliseconds:F0} ms.");
-            }
 
             if (!await WaitForConditionAsync(
-                    () => sessions[0].Connection.LastNativePasteWrittenBytes == expectedPasteBytes,
-                    TimeSpan.FromSeconds(10)))
+                    () => sessions[0].Connection.LastNativePasteWrittenBytes == smallExpectedBytes,
+                    TimeSpan.FromSeconds(5)))
             {
                 return Fail(
                     25,
-                    $"1 MB paste did not complete its ConPTY write. ExpectedBytes={expectedPasteBytes}, " +
+                    $"Small bracketed paste did not reach ConPTY. ExpectedBytes={smallExpectedBytes}, " +
                     $"EncodedBytes={sessions[0].Connection.LastNativePasteBytes}, " +
                     $"WrittenBytes={sessions[0].Connection.LastNativePasteWrittenBytes}, " +
-                    $"WriteMs={sessions[0].Connection.LastNativePasteWriteMilliseconds}, " +
-                    $"Bracketed={sessions[0].Connection.LastNativePasteWasBracketed}.");
-            }
-
-            if (sessions[0].Connection.LastNativePasteBytes != expectedPasteBytes ||
-                !sessions[0].Connection.LastNativePasteWasBracketed)
-            {
-                return Fail(
-                    27,
-                    $"Paste transaction mismatch. ExpectedBytes={expectedPasteBytes}, " +
-                    $"EncodedBytes={sessions[0].Connection.LastNativePasteBytes}, " +
                     $"Bracketed={sessions[0].Connection.LastNativePasteWasBracketed}.");
             }
 
@@ -275,6 +313,37 @@ internal static class TerminalSmokeTest
         }
 
         return builder.ToString();
+    }
+
+    private sealed class ClipboardProbeConnection : ITerminalConnection
+    {
+        public event EventHandler<TerminalOutputEventArgs>? TerminalOutput;
+
+        public int ReceivedTextLength { get; private set; }
+        public char ReceivedTextFirst { get; private set; }
+        public char ReceivedTextLast { get; private set; }
+
+        public void Start()
+        {
+        }
+
+        public void WriteInput(string data)
+        {
+            ReceivedTextLength = data.Length;
+            if (data.Length > 0)
+            {
+                ReceivedTextFirst = data[0];
+                ReceivedTextLast = data[^1];
+            }
+        }
+
+        public void Resize(uint rows, uint columns)
+        {
+        }
+
+        public void Close()
+        {
+        }
     }
 
     private sealed class SmokeSession

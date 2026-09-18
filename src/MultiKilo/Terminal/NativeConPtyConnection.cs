@@ -399,9 +399,14 @@ internal sealed class NativeConPtyConnection : ITerminalConnection, IDisposable
             return Encoding.UTF8.GetBytes(item.Text);
         }
 
-        var filtered = FilterStringForPaste(item.Text);
+        return EncodeNativePaste(item.Text, item.Bracketed);
+    }
 
-        if (!item.Bracketed)
+    internal static byte[] EncodeNativePaste(string text, bool bracketed)
+    {
+        var filtered = FilterStringForPaste(text);
+
+        if (!bracketed)
         {
             return Encoding.UTF8.GetBytes(filtered);
         }
