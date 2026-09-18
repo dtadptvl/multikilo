@@ -41,6 +41,13 @@ if ($process.ExitCode -ne 0) {
     $dumps = @(Get-ChildItem $dumpRoot -Filter "MultiKilo*.dmp" -File -ErrorAction SilentlyContinue)
     foreach ($dump in $dumps) {
         Write-Host "Crash dump: $($dump.FullName) ($($dump.Length) bytes)"
+
+        $cdb = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64" -Filter "cdb.exe" -File -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($cdb) {
+            Write-Host "Crash analysis for $($dump.Name):"
+            & $cdb.FullName -z $dump.FullName -c "!analyze -v; kv; q" 2>&1 | Select-Object -First 500
+        }
     }
 
     throw "Smoke test '$Mode' failed with exit code $($process.ExitCode)"
