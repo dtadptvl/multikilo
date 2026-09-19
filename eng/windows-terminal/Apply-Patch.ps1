@@ -205,8 +205,8 @@ $connectionHppOld = @'
 '@
 $connectionHppNew = @'
         uint64_t RootProcessHandle() noexcept;
-        void MultiKiloSetJob(HANDLE job) noexcept;
-        void MultiKiloSetExitCallback(void* context, void(__stdcall* callback)(void*, DWORD)) noexcept;
+        void MultiKiloSetBridgeMode(bool enabled) noexcept;
+        DWORD MultiKiloLastExitCode() const noexcept;
 '@
 Replace-Once $connectionHpp $connectionHppOld $connectionHppNew
 
@@ -215,9 +215,8 @@ $connectionStateOld = @'
 '@
 $connectionStateNew = @'
         DWORD _flags{ 0 };
-        HANDLE _multiKiloJob{ nullptr };
-        void* _multiKiloExitContext{ nullptr };
-        void(__stdcall* _multiKiloExitCallback)(void*, DWORD){ nullptr };
+        bool _multiKiloBridgeMode{ false };
+        DWORD _multiKiloLastExitCode{ STILL_ACTIVE };
 '@
 Replace-Once $connectionHpp $connectionStateOld $connectionStateNew
 
@@ -238,49 +237,19 @@ $launchAnchor = @'
     void ConptyConnection::_LaunchAttachedClient()
 '@
 $launchReplacement = @'
-    void ConptyConnection::MultiKiloSetJob(HANDLE job) noexcept
+    void ConptyConnection::MultiKiloSetBridgeMode(bool enabled) noexcept
     {
-        _multiKiloJob = job;
+        _multiKiloBridgeMode = enabled;
     }
 
-    void ConptyConnection::MultiKiloSetExitCallback(
-        void* context,
-        void(__stdcall* callback)(void*, DWORD)) noexcept
+    DWORD ConptyConnection::MultiKiloLastExitCode() const noexcept
     {
-        _multiKiloExitContext = context;
-        _multiKiloExitCallback = callback;
+        return _multiKiloLastExitCode;
     }
 
     void ConptyConnection::_LaunchAttachedClient()
 '@
 Replace-Once $connectionCpp $launchAnchor $launchReplacement
-
-$createFlagsOld = "EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, // dwCreationFlags"
-$createFlagsNew = "EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED, // dwCreationFlags"
-Replace-Once $connectionCpp $createFlagsOld $createFlagsNew
-
-$processCreatedOld = @'
-            &_piClient // lpProcessInformation
-            ));
-
-        DeleteProcThreadAttributeList(siEx.lpAttributeList);
-'@
-$processCreatedNew = @'
-            &_piClient // lpProcessInformation
-            ));
-
-        if (_multiKiloJob)
-        {
-            THROW_IF_WIN32_BOOL_FALSE(AssignProcessToJobObject(_multiKiloJob, _piClient.hProcess));
-        }
-
-        THROW_LAST_ERROR_IF(ResumeThread(_piClient.hThread) == static_cast<DWORD>(-1));
-
-        DeleteProcThreadAttributeList(siEx.lpAttributeList);
-'@
-Replace-Once $connectionCpp $processCreatedOld $processCreatedNew
-
-
 $disconnectOld = @'
         _transitionToState(exitCode == 0 || exitCode == STILL_ACTIVE ? ConnectionState::Closed : ConnectionState::Failed);
         _indicateExitWithStatus(exitCode);
@@ -290,18 +259,9 @@ $disconnectOld = @'
     void ConptyConnection::WriteInput(const winrt::array_view<const char16_t> buffer)
 '@
 $disconnectNew = @'
+        _multiKiloLastExitCode = exitCode;
         _transitionToState(exitCode == 0 || exitCode == STILL_ACTIVE ? ConnectionState::Closed : ConnectionState::Failed);
-
-        if (const auto callback = _multiKiloExitCallback)
-        {
-            // MultiKilo is a portable host and does not ship the Windows
-            // Terminal app's localized resource context. The stock
-            // _indicateExitWithStatus() path calls RS_/RS_fmt and fail-fasts
-            // in TerminalConnection.dll when used standalone. MultiKilo owns
-            // session-exit UI/lifecycle, so report only the exit code here.
-            callback(_multiKiloExitContext, exitCode);
-        }
-        else
+        if (!_multiKiloBridgeMode)
         {
             _indicateExitWithStatus(exitCode);
         }
@@ -324,13 +284,14 @@ namespace
     struct MultiKiloConptySession
     {
         winrt::com_ptr<winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection> connection;
-        wil::unique_handle job;
         std::atomic_bool running{ false };
         std::atomic<void*> context{ nullptr };
         std::atomic<MultiKiloOutputCallback> outputCallback{ nullptr };
         std::atomic<MultiKiloExitCallback> exitCallback{ nullptr };
         winrt::event_token outputToken{};
+        winrt::event_token stateToken{};
         bool outputSubscribed{ false };
+        bool stateSubscribed{ false };
     };
 }
 
@@ -354,19 +315,8 @@ try
     holder->outputCallback = outputCallback;
     holder->exitCallback = exitCallback;
 
-    holder->job.reset(CreateJobObjectW(nullptr, nullptr));
-    RETURN_LAST_ERROR_IF_NULL(holder->job);
-
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo{};
-    jobInfo.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    RETURN_IF_WIN32_BOOL_FALSE(SetInformationJobObject(
-        holder->job.get(),
-        JobObjectExtendedLimitInformation,
-        &jobInfo,
-        sizeof(jobInfo)));
-
     holder->connection = winrt::make_self<winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection>();
-    holder->connection->MultiKiloSetJob(holder->job.get());
+    holder->connection->MultiKiloSetBridgeMode(true);
 
     const auto settings = winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection::CreateSettings(
         winrt::hstring{ commandLine },
@@ -382,23 +332,21 @@ try
     holder->connection->Initialize(settings);
 
     const auto raw = holder.get();
-    holder->connection->MultiKiloSetExitCallback(
-        raw,
-        [](void* context, DWORD exitCode) noexcept {
-            const auto session = static_cast<MultiKiloConptySession*>(context);
-            if (!session)
-            {
-                return;
-            }
-
-            session->running = false;
-            const auto callback = session->exitCallback.load();
-            const auto callbackContext = session->context.load();
+    holder->stateToken = holder->connection->StateChanged([raw](const auto&, const auto&) {
+        const auto state = raw->connection->State();
+        if (state == winrt::Microsoft::Terminal::TerminalConnection::ConnectionState::Closed ||
+            state == winrt::Microsoft::Terminal::TerminalConnection::ConnectionState::Failed)
+        {
+            raw->running = false;
+            const auto callback = raw->exitCallback.load();
+            const auto callbackContext = raw->context.load();
             if (callback && callbackContext)
             {
-                callback(callbackContext, exitCode);
+                callback(callbackContext, raw->connection->MultiKiloLastExitCode());
             }
-        });
+        }
+    });
+    holder->stateSubscribed = true;
 
     holder->outputToken = holder->connection->TerminalOutput([raw](const winrt::array_view<const char16_t> output) {
         const auto callback = raw->outputCallback.load();
@@ -457,9 +405,9 @@ extern "C" __declspec(dllexport) void __stdcall MultiKiloConptyTerminate(void* s
 try
 {
     const auto holder = static_cast<MultiKiloConptySession*>(session);
-    if (holder && holder->job)
+    if (holder && holder->connection)
     {
-        LOG_IF_WIN32_BOOL_FALSE(TerminateJobObject(holder->job.get(), 1));
+        holder->connection->Close();
     }
 }
 CATCH_LOG()
@@ -484,20 +432,15 @@ try
         holder->connection->TerminalOutput(holder->outputToken);
         holder->outputSubscribed = false;
     }
+    if (holder->connection && holder->stateSubscribed)
+    {
+        holder->connection->StateChanged(holder->stateToken);
+        holder->stateSubscribed = false;
+    }
 
     holder->outputCallback = nullptr;
     holder->exitCallback = nullptr;
     holder->context = nullptr;
-
-    if (holder->connection)
-    {
-        holder->connection->MultiKiloSetExitCallback(nullptr, nullptr);
-    }
-
-    if (holder->job && holder->running)
-    {
-        TerminateJobObject(holder->job.get(), 1);
-    }
 
     if (holder->connection)
     {
