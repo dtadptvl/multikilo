@@ -18,6 +18,8 @@
     <PublishReadyToRun>false</PublishReadyToRun>
     <PatchedTerminalDll>$(MSBuildThisFileDirectory)..\..\artifacts\terminal\win-x64\Microsoft.Terminal.Control.dll</PatchedTerminalDll>
     <PatchedTerminalConnectionDll>$(MSBuildThisFileDirectory)..\..\artifacts\terminal\win-x64\TerminalConnection.dll</PatchedTerminalConnectionDll>
+    <PatchedOpenConsoleExe>$(MSBuildThisFileDirectory)..\..\artifacts\terminal\win-x64\OpenConsole.exe</PatchedOpenConsoleExe>
+    <PatchedOpenConsoleProxyDll>$(MSBuildThisFileDirectory)..\..\artifacts\terminal\win-x64\OpenConsoleProxy.dll</PatchedOpenConsoleProxyDll>
   </PropertyGroup>
 
   <ItemGroup>
@@ -34,10 +36,18 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
+    <None Include="$(PatchedOpenConsoleExe)" Link="OpenConsole.exe">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+    <None Include="$(PatchedOpenConsoleProxyDll)" Link="OpenConsoleProxy.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
   </ItemGroup>
 
   <Target Name="RequirePatchedTerminal" BeforeTargets="PrepareForBuild"
-          Condition="'$(DesignTimeBuild)' != 'true' and (!Exists('$(PatchedTerminalDll)') or !Exists('$(PatchedTerminalConnectionDll)'))">
+          Condition="'$(DesignTimeBuild)' != 'true' and (!Exists('$(PatchedTerminalDll)') or !Exists('$(PatchedTerminalConnectionDll)') or !Exists('$(PatchedOpenConsoleExe)') or !Exists('$(PatchedOpenConsoleProxyDll)'))">
     <Error Text="Patched terminal native DLLs are missing. Run eng\windows-terminal\Build-PatchedTerminal.ps1 first." />
   </Target>
 </Project>
