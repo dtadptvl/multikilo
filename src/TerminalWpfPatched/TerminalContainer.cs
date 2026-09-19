@@ -195,7 +195,12 @@ namespace Microsoft.Terminal.Wpf
         {
             var columns = (uint)Math.Max(1, this.Columns);
             var rows = (uint)Math.Max(1, this.Rows);
-            NativeMethods.TerminalStartSession(this.terminal, commandLine, workingDirectory, columns, rows);
+            NativeMethods.TerminalStartSession(
+                this.terminal,
+                commandLine,
+                workingDirectory,
+                columns,
+                rows);
         }
 
         internal void TerminateSession() => NativeMethods.TerminalTerminateSession(this.terminal);

@@ -56,6 +56,7 @@ jobs:
           $changed | ForEach-Object { Write-Host "changed: $_" }
           $message = git log -1 --pretty=%B
           $forceRelease = $message -match '\[release\]'
+          $forceArtifact = $forceRelease -or $message -match '\[artifact\]'
           $forceAll = $forceRelease -or $message -match '\[smoke:all\]'
           $forceClipboard = $forceAll -or $message -match '\[smoke:clipboard\]'
           $forcePaste = $forceAll -or $message -match '\[smoke:paste\]'
@@ -67,8 +68,10 @@ jobs:
               "eng/windows-terminal/Build-PatchedTerminal.ps1"
             )
           }).Count -gt 0
+          $hasExplicitSmokeTarget = $message -match '\[smoke:(clipboard|paste|sessions)\]'
+          $nativeDefault = $native -and -not $hasExplicitSmokeTarget
 
-          $clipboard = $native -or $forceClipboard -or @($changed | Where-Object {
+          $clipboard = $nativeDefault -or $forceClipboard -or @($changed | Where-Object {
             $_ -in @(
               "src/TerminalWpfPatched/NativeMethods.cs",
               "src/TerminalWpfPatched/TerminalContainer.cs",
@@ -76,7 +79,7 @@ jobs:
             )
           }).Count -gt 0
 
-          $paste = $native -or $forcePaste -or @($changed | Where-Object {
+          $paste = $nativeDefault -or $forcePaste -or @($changed | Where-Object {
             $_ -in @(
               "src/MultiKilo/Terminal/ProjectSession.cs",
               "src/TerminalWpfPatched/NativeMethods.cs",
@@ -85,7 +88,7 @@ jobs:
             )
           }).Count -gt 0
 
-          $sessions = $native -or $forceSessions -or @($changed | Where-Object {
+          $sessions = $nativeDefault -or $forceSessions -or @($changed | Where-Object {
             $_ -in @(
               "src/MultiKilo/Terminal/ProjectSession.cs",
               "src/MultiKilo/MainWindow.xaml.cs",
@@ -98,6 +101,7 @@ jobs:
           "paste=$($paste.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "sessions=$($sessions.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "release=$($forceRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "artifact=$($forceArtifact.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
 
       - name: Restore managed dependencies
         run: dotnet restore .\MultiKilo.sln
@@ -106,36 +110,39 @@ jobs:
         run: dotnet build .\MultiKilo.sln -c Release --no-restore
 
       - name: Clipboard and scroll smoke
-        if: steps.terminal-cache.outputs.cache-hit != 'true' || steps.changes.outputs.clipboard == 'true' || inputs.full_acceptance == true
+        if: steps.changes.outputs.clipboard == 'true' || inputs.full_acceptance == true
         shell: pwsh
         run: .\.github\scripts\Run-Smoke.ps1 clipboard
 
       - name: 288-line bracketed paste smoke
-        if: steps.terminal-cache.outputs.cache-hit != 'true' || steps.changes.outputs.paste == 'true' || inputs.full_acceptance == true
+        if: steps.changes.outputs.paste == 'true' || inputs.full_acceptance == true
         shell: pwsh
         run: .\.github\scripts\Run-Smoke.ps1 paste
 
       - name: Native session lifecycle smoke
-        if: steps.terminal-cache.outputs.cache-hit != 'true' || steps.changes.outputs.sessions == 'true' || inputs.full_acceptance == true
+        if: steps.changes.outputs.sessions == 'true' || inputs.full_acceptance == true
         shell: pwsh
         run: .\.github\scripts\Run-Smoke.ps1 sessions
 
       - name: Publish portable x64 folder
-        if: steps.changes.outputs.release == 'true' || inputs.full_acceptance == true
+        if: steps.changes.outputs.artifact == 'true' || inputs.full_acceptance == true
         shell: pwsh
         run: .\build.ps1 -SkipTerminalBuild
 
       - name: Inspect output
-        if: steps.changes.outputs.release == 'true' || inputs.full_acceptance == true
+        if: steps.changes.outputs.artifact == 'true' || inputs.full_acceptance == true
         shell: pwsh
         run: |
           $exe = ".\dist\MultiKilo-win-x64\MultiKilo.exe"
           if (-not (Test-Path $exe)) { throw "MultiKilo.exe was not published." }
-          if (-not (Test-Path ".\dist\MultiKilo-win-x64\Microsoft.Terminal.Control.dll")) { throw "Patched terminal DLL missing from portable output." }
+          if (-not (Test-Path ".\dist\MultiKilo-win-x64\Microsoft.Terminal.Control.dll")) { throw "Patched terminal control DLL missing from portable output." }
+          if (-not (Test-Path ".\dist\MultiKilo-win-x64\TerminalConnection.dll")) { throw "TerminalConnection.dll missing from portable output." }
+          if (-not (Test-Path ".\dist\MultiKilo-win-x64\OpenConsole.exe")) { throw "OpenConsole.exe missing from portable output." }
+          if (-not (Test-Path ".\dist\MultiKilo-win-x64\OpenConsoleProxy.dll")) { throw "OpenConsoleProxy.dll missing from portable output." }
           Get-ChildItem .\dist\MultiKilo-win-x64 -File | Sort-Object Name | Select-Object Name, Length | Format-Table -AutoSize
 
       - uses: actions/upload-artifact@v4
-        if: steps.changes.outputs.release == 'true' || inputs.full_acceptance == true
+        if: steps.changes.outputs.artifact == 'true' || inputs.full_acceptance == true
         with:
           name: MultiKilo-win-x64
           path: dist/MultiKilo-win-x64/
