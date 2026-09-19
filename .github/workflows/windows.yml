@@ -137,6 +137,8 @@ jobs:
           if (-not (Test-Path $exe)) { throw "MultiKilo.exe was not published." }
           if (-not (Test-Path ".\dist\MultiKilo-win-x64\Microsoft.Terminal.Control.dll")) { throw "Patched terminal control DLL missing from portable output." }
           if (-not (Test-Path ".\dist\MultiKilo-win-x64\TerminalConnection.dll")) { throw "TerminalConnection.dll missing from portable output." }
+          if (-not (Test-Path ".\dist\MultiKilo-win-x64\OpenConsole.exe")) { throw "OpenConsole.exe missing from portable output." }
+          if (-not (Test-Path ".\dist\MultiKilo-win-x64\OpenConsoleProxy.dll")) { throw "OpenConsoleProxy.dll missing from portable output." }
           Get-ChildItem .\dist\MultiKilo-win-x64 -File | Sort-Object Name | Select-Object Name, Length | Format-Table -AutoSize
 
       - uses: actions/upload-artifact@v4
