@@ -152,6 +152,7 @@ try {
         "/m",
         "/p:Configuration=$Configuration",
         "/p:Platform=x64",
+        "/p:SolutionDir=$sourceDir\",
         "/p:WindowsTargetPlatformVersion=$sdkVersion"
     )
 }
