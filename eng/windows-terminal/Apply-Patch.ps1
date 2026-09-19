@@ -206,6 +206,7 @@ $connectionHppOld = @'
 $connectionHppNew = @'
         uint64_t RootProcessHandle() noexcept;
         void MultiKiloSetBridgeMode(bool enabled) noexcept;
+        void MultiKiloSetJob(HANDLE job) noexcept;
         DWORD MultiKiloLastExitCode() const noexcept;
 '@
 Replace-Once $connectionHpp $connectionHppOld $connectionHppNew
@@ -216,6 +217,7 @@ $connectionStateOld = @'
 $connectionStateNew = @'
         DWORD _flags{ 0 };
         bool _multiKiloBridgeMode{ false };
+        HANDLE _multiKiloJob{ nullptr };
         DWORD _multiKiloLastExitCode{ STILL_ACTIVE };
 '@
 Replace-Once $connectionHpp $connectionStateOld $connectionStateNew
@@ -242,6 +244,11 @@ $launchReplacement = @'
         _multiKiloBridgeMode = enabled;
     }
 
+    void ConptyConnection::MultiKiloSetJob(HANDLE job) noexcept
+    {
+        _multiKiloJob = job;
+    }
+
     DWORD ConptyConnection::MultiKiloLastExitCode() const noexcept
     {
         return _multiKiloLastExitCode;
@@ -250,6 +257,59 @@ $launchReplacement = @'
     void ConptyConnection::_LaunchAttachedClient()
 '@
 Replace-Once $connectionCpp $launchAnchor $launchReplacement
+
+$attributeListOld = @'
+        SIZE_T size{};
+        // This call will return an error (by design); we are ignoring it.
+        InitializeProcThreadAttributeList(nullptr, 1, 0, &size);
+#pragma warning(suppress : 26414) // We don't move/touch this smart pointer, but we have to allocate strangely for the adjustable size list.
+        auto attrList{ std::make_unique<std::byte[]>(size) };
+#pragma warning(suppress : 26490) // We have to use reinterpret_cast because we allocated a byte array as a proxy for the adjustable size list.
+        siEx.lpAttributeList = reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(attrList.get());
+        THROW_IF_WIN32_BOOL_FALSE(InitializeProcThreadAttributeList(siEx.lpAttributeList, 1, 0, &size));
+
+        THROW_IF_WIN32_BOOL_FALSE(UpdateProcThreadAttribute(
+            siEx.lpAttributeList,
+            0,
+            PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+            _hPC.get(),
+            sizeof(HPCON),
+            nullptr,
+            nullptr));
+'@
+$attributeListNew = @'
+        SIZE_T size{};
+        const DWORD attributeCount = _multiKiloJob ? 2 : 1;
+        // This call will return an error (by design); we are ignoring it.
+        InitializeProcThreadAttributeList(nullptr, attributeCount, 0, &size);
+#pragma warning(suppress : 26414) // We don't move/touch this smart pointer, but we have to allocate strangely for the adjustable size list.
+        auto attrList{ std::make_unique<std::byte[]>(size) };
+#pragma warning(suppress : 26490) // We have to use reinterpret_cast because we allocated a byte array as a proxy for the adjustable size list.
+        siEx.lpAttributeList = reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(attrList.get());
+        THROW_IF_WIN32_BOOL_FALSE(InitializeProcThreadAttributeList(siEx.lpAttributeList, attributeCount, 0, &size));
+
+        THROW_IF_WIN32_BOOL_FALSE(UpdateProcThreadAttribute(
+            siEx.lpAttributeList,
+            0,
+            PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+            _hPC.get(),
+            sizeof(HPCON),
+            nullptr,
+            nullptr));
+
+        if (_multiKiloJob)
+        {
+            THROW_IF_WIN32_BOOL_FALSE(UpdateProcThreadAttribute(
+                siEx.lpAttributeList,
+                0,
+                PROC_THREAD_ATTRIBUTE_JOB_LIST,
+                &_multiKiloJob,
+                sizeof(_multiKiloJob),
+                nullptr,
+                nullptr));
+        }
+'@
+Replace-Once $connectionCpp $attributeListOld $attributeListNew
 $disconnectOld = @'
         _transitionToState(exitCode == 0 || exitCode == STILL_ACTIVE ? ConnectionState::Closed : ConnectionState::Failed);
         _indicateExitWithStatus(exitCode);
@@ -284,6 +344,7 @@ namespace
     struct MultiKiloConptySession
     {
         winrt::com_ptr<winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection> connection;
+        wil::unique_handle job;
         std::atomic_bool running{ false };
         std::atomic<void*> context{ nullptr };
         std::atomic<MultiKiloOutputCallback> outputCallback{ nullptr };
@@ -315,8 +376,20 @@ try
     holder->outputCallback = outputCallback;
     holder->exitCallback = exitCallback;
 
+    holder->job.reset(CreateJobObjectW(nullptr, nullptr));
+    RETURN_LAST_ERROR_IF_NULL(holder->job);
+
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo{};
+    jobInfo.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    RETURN_IF_WIN32_BOOL_FALSE(SetInformationJobObject(
+        holder->job.get(),
+        JobObjectExtendedLimitInformation,
+        &jobInfo,
+        sizeof(jobInfo)));
+
     holder->connection = winrt::make_self<winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection>();
     holder->connection->MultiKiloSetBridgeMode(true);
+    holder->connection->MultiKiloSetJob(holder->job.get());
 
     const auto settings = winrt::Microsoft::Terminal::TerminalConnection::implementation::ConptyConnection::CreateSettings(
         winrt::hstring{ commandLine },
@@ -405,9 +478,16 @@ extern "C" __declspec(dllexport) void __stdcall MultiKiloConptyTerminate(void* s
 try
 {
     const auto holder = static_cast<MultiKiloConptySession*>(session);
-    if (holder && holder->connection)
+    if (holder)
     {
-        holder->connection->Close();
+        if (holder->job)
+        {
+            LOG_IF_WIN32_BOOL_FALSE(TerminateJobObject(holder->job.get(), 1));
+        }
+        if (holder->connection)
+        {
+            holder->connection->Close();
+        }
     }
 }
 CATCH_LOG()
@@ -441,6 +521,11 @@ try
     holder->outputCallback = nullptr;
     holder->exitCallback = nullptr;
     holder->context = nullptr;
+
+    if (holder->job && holder->running)
+    {
+        TerminateJobObject(holder->job.get(), 1);
+    }
 
     if (holder->connection)
     {
