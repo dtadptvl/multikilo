@@ -142,6 +142,18 @@ try {
         "/p:GenerateAppxPackageOnBuild=false",
         "/p:WindowsTargetPlatformVersion=$sdkVersion"
     )
+
+    # TerminalConnection's private winconpty protocol must run against the
+    # matching OpenConsole.exe from the same Windows Terminal build. If this
+    # binary is absent, winconpty falls back to the inbox conhost.exe, which may
+    # be older and protocol-incompatible.
+    Invoke-Native $msbuild @(
+        (Join-Path $sourceDir "src\host\exe\Host.EXE.vcxproj"),
+        "/m",
+        "/p:Configuration=$Configuration",
+        "/p:Platform=x64",
+        "/p:WindowsTargetPlatformVersion=$sdkVersion"
+    )
 }
 finally {
     Pop-Location
@@ -169,10 +181,26 @@ if (-not $connectionMap) {
     throw "Built TerminalConnection.map was not found."
 }
 
+$openConsole = Get-ChildItem (Join-Path $sourceDir "bin") -Recurse -Filter "OpenConsole.exe" -File |
+    Where-Object { $_.FullName -match "\\x64\\$Configuration\\" } |
+    Select-Object -First 1
+if (-not $openConsole) {
+    throw "Built OpenConsole.exe was not found."
+}
+
+$openConsoleProxy = Get-ChildItem (Join-Path $sourceDir "bin") -Recurse -Filter "OpenConsoleProxy.dll" -File |
+    Where-Object { $_.FullName -match "\\x64\\$Configuration\\" } |
+    Select-Object -First 1
+if (-not $openConsoleProxy) {
+    throw "Built OpenConsoleProxy.dll was not found."
+}
+
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 Copy-Item $dll.FullName (Join-Path $outputDir "Microsoft.Terminal.Control.dll") -Force
 Copy-Item $connectionDll.FullName (Join-Path $outputDir "TerminalConnection.dll") -Force
 Copy-Item $connectionMap.FullName (Join-Path $outputDir "TerminalConnection.map") -Force
+Copy-Item $openConsole.FullName (Join-Path $outputDir "OpenConsole.exe") -Force
+Copy-Item $openConsoleProxy.FullName (Join-Path $outputDir "OpenConsoleProxy.dll") -Force
 
 Write-Host "Built patched Windows Terminal control and upstream TerminalConnection."
 Write-Host "Source: $terminalTag ($terminalCommit)"
@@ -180,3 +208,5 @@ Write-Host "Windows SDK: $sdkVersion"
 Write-Host "Control DLL: $(Join-Path $outputDir 'Microsoft.Terminal.Control.dll')"
 Write-Host "Connection DLL: $(Join-Path $outputDir 'TerminalConnection.dll')"
 Write-Host "Connection MAP: $(Join-Path $outputDir 'TerminalConnection.map')"
+Write-Host "OpenConsole: $(Join-Path $outputDir 'OpenConsole.exe')"
+Write-Host "OpenConsole proxy: $(Join-Path $outputDir 'OpenConsoleProxy.dll')"
